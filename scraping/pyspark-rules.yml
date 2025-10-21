@@ -1,0 +1,52 @@
+rules:
+  - id: pyspark-udf-detection
+    languages: [python]
+    message: "Detected PySpark UDF definition or registration."
+    severity: INFO
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @udf(...)
+              def $FUNC(...):
+                  ...
+          - pattern: |
+              def $FUNC(...):
+                  ...
+      - pattern-either:
+          - pattern: spark.udf.register($NAME, $FUNC)
+          - pattern: $SPARK.udf.register($NAME, $FUNC)
+          - pattern: F.udf(...)
+          - pattern: pyspark.sql.functions.udf(...)
+
+  - id: pyspark-sql-detection
+    languages: [python]
+    message: "PySpark SQL query detected"
+    severity: INFO
+    patterns:
+      - pattern-either:
+        - pattern: spark.sql("$SQL")
+        - pattern: spark.sqlContext.sql("$SQL")
+
+  - id: pyspark-df-detection
+    languages: [python]
+    message: "Detected PySpark DF operation."
+    severity: INFO
+    patterns:
+      - pattern-either:
+          - pattern: $DF.select(...)
+          - pattern: $DF.filter(...)
+          - pattern: $DF.where(...)
+          - pattern: $DF.groupBy(...)
+          - pattern: $DF.agg(...)
+          - pattern: $DF.join(...)
+          - pattern: $DF.withColumn(...)
+          - pattern: $DF.drop(...)
+          - pattern: $DF.distinct(...)
+          - pattern: $DF.limit(...)
+          - pattern: $DF.union(...)
+          - pattern: $DF.orderBy(...)
+          - pattern: $DF.sort(...)
+          - pattern: $DF.write.$FUNC(...)
+          - pattern: $DF.write.format(...).save(...)
+          - pattern: $DF.write.mode(...).parquet(...)
+          - pattern: $DF.write.mode(...).csv(...)

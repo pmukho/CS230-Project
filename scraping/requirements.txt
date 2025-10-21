@@ -3,3 +3,5 @@ python-dotenv
 PyGithub
 GitPython
 semgrep
+nbformat
+nbconvert
