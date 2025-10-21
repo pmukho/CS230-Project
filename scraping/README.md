@@ -15,3 +15,4 @@
     source .venv/bin/activate
     pip install -r requirements.txt
     ```
+6. Run all cells and expect results to be stored in `.results/all_results.jsonl`
