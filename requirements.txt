@@ -5,3 +5,4 @@ GitPython
 semgrep
 nbformat
 nbconvert
+libcst>=1.2.0
