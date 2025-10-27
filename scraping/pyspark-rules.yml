@@ -1,27 +1,30 @@
 rules:
-  - id: pyspark-udf-detection
+  - id: pyspark-udf-definition
     languages: [python]
-    message: "Detected PySpark UDF definition or registration."
+    message: "$FUNC"
     severity: INFO
-    patterns:
-      - pattern-either:
-          - pattern: |
-              @udf(...)
-              def $FUNC(...):
-                  ...
-          - pattern: |
-              def $FUNC(...):
-                  ...
-      - pattern-either:
-          - pattern: spark.udf.register($NAME, $FUNC)
-          - pattern: $SPARK.udf.register($NAME, $FUNC)
-          - pattern: F.udf(...)
-          - pattern: pyspark.sql.functions.udf(...)
+    # metadata:
+    #   references:
+    #     - https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.functions.udf.html
+    pattern-either:
+      - pattern: |
+          @udf(...)
+          def $FUNC(...):
+              ...
+      - pattern: |
+          @udf
+          def $FUNC(...):
+              ...
+      - pattern: |
+          $FUNC = udf(...)
 
-  - id: pyspark-df-detection
+  - id: pyspark-df-expression
     languages: [python]
     message: "Detected PySpark DF operation."
     severity: INFO
+    # metadata:
+    #   references:
+    #     - https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.html
     pattern-either:
       - patterns:
         - pattern: $DF.$OP(...)
