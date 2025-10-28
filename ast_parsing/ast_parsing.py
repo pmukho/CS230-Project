@@ -43,6 +43,12 @@ def try_parse(snippet):
 
 class SparkCallVisitor(cst.CSTVisitor):
     """Collects DataFrame operations and UDF usages."""
+    PYSPARK_DF_METHODS = {
+        'alias', 'agg', 'collect', 'count', 'distinct', 'drop', 'filter', 'groupBy', 
+        'join', 'limit', 'orderBy', 'select', 'selectExpr', 'sort', 'union', 'where', 'withColumn'
+    }
+    THIRD_PARTY_LIBS = {"numpy", "pandas", "torch", "sklearn"}
+
     def __init__(self):
         self.funcs = set()
         self.third_party_libs = set()
@@ -50,7 +56,7 @@ class SparkCallVisitor(cst.CSTVisitor):
 
     def visit_Attribute(self, node):
         name = node.attr.value
-        if name in {"filter", "select", "alias", "withColumn", "join"}:
+        if name in self.PYSPARK_DF_METHODS:
             self.funcs.add(name)
 
     #find udfs and chained DF ops.
@@ -58,7 +64,7 @@ class SparkCallVisitor(cst.CSTVisitor):
         #TODO: handle more robustly.
         if isinstance(node.func, cst.Attribute):
             func_name = node.func.attr.value
-            if func_name in {"filter", "select", "alias", "withColumn", "join", "distinct", "collect", "groupBy"}:
+            if func_name in self.PYSPARK_DF_METHODS:
                 self.funcs.add(func_name)
 
         code_repr = cst.Module([]).code_for_node(node.func)
@@ -69,11 +75,11 @@ class SparkCallVisitor(cst.CSTVisitor):
     def visit_Import(self, node):
         for alias in node.names:
             name = alias.name.value
-            if name in {"numpy", "pandas", "torch", "sklearn"}: 
+            if name in self.THIRD_PARTY_LIBS: 
                 self.third_party_libs.add(name)
 
     def visit_ImportFrom(self, node):
-        if node.module and node.module.value in {"numpy", "pandas", "torch", "sklearn"}:
+        if node.module and node.module.value in self.THIRD_PARTY_LIBS:
             self.third_party_libs.add(node.module.value)
 
 
