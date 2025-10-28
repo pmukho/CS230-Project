@@ -53,10 +53,16 @@ class SparkCallVisitor(cst.CSTVisitor):
         if name in {"filter", "select", "alias", "withColumn", "join"}:
             self.funcs.add(name)
 
-    #find udfs
+    #find udfs and chained DF ops.
     def visit_Call(self, node):
-        code = node.func.code if hasattr(node.func, "code") else str(node.func)
-        if "udf" in code:
+        #TODO: handle more robustly.
+        if isinstance(node.func, cst.Attribute):
+            func_name = node.func.attr.value
+            if func_name in {"filter", "select", "alias", "withColumn", "join", "distinct", "collect", "groupBy"}:
+                self.funcs.add(func_name)
+
+        code_repr = cst.Module([]).code_for_node(node.func)
+        if "udf" in code_repr:
             self.has_udf = True
 
     #TODO: define what third party libraries we actually care abt.
