@@ -1,6 +1,7 @@
 import json
 import libcst as cst
 from pathlib import Path
+import os
 
 
 def extract_snippets(filename):
@@ -83,8 +84,12 @@ class SparkCallVisitor(cst.CSTVisitor):
             self.third_party_libs.add(node.module.value)
 
 
-def analyze_file(filename):
+def analyze_file(filename) -> None:
     """Parse JSONL and analyze each snippet."""
+    # Create results jsonl
+    os.makedirs("results", exist_ok=True)
+    summary_path = os.path.join("results", "ast_parsing_results.jsonl")
+
     for repo, snippet in extract_snippets(filename):
         tree = try_parse(snippet)
         if not tree:
@@ -94,14 +99,21 @@ def analyze_file(filename):
         tree.visit(visitor)
 
         if visitor.funcs or visitor.has_udf or visitor.third_party_libs:
-            print(f"\nFOLDER {repo}")
-            print(f"Snippet: {snippet}")
-            print(f"- PySpark Ops: {sorted(visitor.funcs) or '—'}")
-            print(f"- Uses UDF: {visitor.has_udf}")
-            print(f"- Third-party libs: {sorted(visitor.third_party_libs) or '—'}")
+            data = {
+                "folder": repo,
+                "snippet": snippet,
+                "pyspark_ops": sorted(visitor.funcs) or [],
+                "uses_udf": visitor.has_udf,
+                "third_party_libs": sorted(visitor.third_party_libs) or []
+            }
+        
+            # append or write
+            with open(summary_path, "a") as f:
+                json.dump(data, f)
+                f.write("\n")  # JSONL format, one object per line
 
 
 if __name__ == "__main__":
-    #filename = Path(__file__).parent.parent / "scraping" / "results" / "all_results.jsonl"
-    filename = Path(__file__).parent.parent / "ast_parsing" / "sample_results.jsonl"
+    filename = Path(__file__).parent.parent / "scraping" / "results" / "all_results.jsonl"
+    # filename = Path(__file__).parent.parent / "ast_parsing" / "sample_results.jsonl"
     analyze_file(filename)
