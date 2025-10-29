@@ -18,6 +18,26 @@ rules:
       - pattern: |
           $FUNC = udf(...)
 
+  - id: library-usage
+    languages: [python]
+    message: "$FUNC:$LIB:$CALL"
+    severity: INFO
+    pattern-either:
+      - pattern: |
+          import $LIB
+          ...
+          def $FUNC(...):
+            ...
+            $LIB.$CALL(...)
+            ...
+      - pattern: |
+          from $LIB import $CALL
+          ...
+          def $FUNC(...):
+            ...
+            $CALL(...)
+            ...
+
   - id: pyspark-df-expression
     languages: [python]
     message: "Detected PySpark DF operation."

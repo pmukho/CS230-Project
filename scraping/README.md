@@ -23,7 +23,7 @@
 
 Output is stored in `./scraping/results/summary.jsonl` where each line is a valid JSON object matching the schema given below. Tools like `jq` will make output file easy for human to read.
 
-```json
+```
 {
   repo_name: string,
   clone_url: string (URL),
@@ -33,7 +33,13 @@ Output is stored in `./scraping/results/summary.jsonl` where each line is a vali
       udfs: [
         {
           name: string,
-          definition: string
+          definition: string,
+          calls: [
+            {
+              library: string,
+              method: string
+            }
+          ]
         }
       ],
       df_exprs: [string]
