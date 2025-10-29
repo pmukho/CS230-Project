@@ -1,52 +1,72 @@
 rules:
-  - id: pyspark-udf-detection
+  - id: pyspark-udf-definition
     languages: [python]
-    message: "Detected PySpark UDF definition or registration."
+    message: "$FUNC"
     severity: INFO
-    patterns:
-      - pattern-either:
-          - pattern: |
-              @udf(...)
-              def $FUNC(...):
-                  ...
-          - pattern: |
-              def $FUNC(...):
-                  ...
-      - pattern-either:
-          - pattern: spark.udf.register($NAME, $FUNC)
-          - pattern: $SPARK.udf.register($NAME, $FUNC)
-          - pattern: F.udf(...)
-          - pattern: pyspark.sql.functions.udf(...)
+    # metadata:
+    #   references:
+    #     - https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.functions.udf.html
+    pattern-either:
+      - pattern: |
+          @udf(...)
+          def $FUNC(...):
+              ...
+      - pattern: |
+          @udf
+          def $FUNC(...):
+              ...
+      - pattern: |
+          $FUNC = udf(...)
 
-  - id: pyspark-sql-detection
+  - id: library-usage
     languages: [python]
-    message: "PySpark SQL query detected"
+    message: "$FUNC:$LIB:$CALL"
     severity: INFO
-    patterns:
-      - pattern-either:
-        - pattern: spark.sql("$SQL")
-        - pattern: spark.sqlContext.sql("$SQL")
+    pattern-either:
+      - pattern: |
+          import $LIB
+          ...
+          def $FUNC(...):
+            ...
+            $LIB.$CALL(...)
+            ...
+      - pattern: |
+          from $LIB import $CALL
+          ...
+          def $FUNC(...):
+            ...
+            $CALL(...)
+            ...
 
-  - id: pyspark-df-detection
+  - id: pyspark-df-expression
     languages: [python]
     message: "Detected PySpark DF operation."
     severity: INFO
-    patterns:
-      - pattern-either:
-          - pattern: $DF.select(...)
-          - pattern: $DF.filter(...)
-          - pattern: $DF.where(...)
-          - pattern: $DF.groupBy(...)
-          - pattern: $DF.agg(...)
-          - pattern: $DF.join(...)
-          - pattern: $DF.withColumn(...)
-          - pattern: $DF.drop(...)
-          - pattern: $DF.distinct(...)
-          - pattern: $DF.limit(...)
-          - pattern: $DF.union(...)
-          - pattern: $DF.orderBy(...)
-          - pattern: $DF.sort(...)
-          - pattern: $DF.write.$FUNC(...)
-          - pattern: $DF.write.format(...).save(...)
-          - pattern: $DF.write.mode(...).parquet(...)
-          - pattern: $DF.write.mode(...).csv(...)
+    # metadata:
+    #   references:
+    #     - https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.html
+    pattern-either:
+      - patterns:
+        - pattern: $DF.$OP(...)
+        - metavariable-regex:
+            metavariable: $DF
+            regex: .*df.*
+        - metavariable-pattern:
+            metavariable: $OP
+            pattern-either:
+            - pattern: agg
+            - pattern: count
+            - pattern: crossJoin
+            - pattern: distinct
+            - pattern: exceptAll
+            - pattern: exists
+            - pattern: filter
+            - pattern: groupBy
+            - pattern: groupby
+            - pattern: intersect
+            - pattern: intersectAll
+            - pattern: join
+            - pattern: limit
+            - pattern: orderBy
+            - pattern: select
+            - pattern: subtract
