@@ -2,3 +2,6 @@
 .venv
 *.jsonl
 *.python-version
+
+# ignore results files
+results/

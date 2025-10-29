@@ -1,0 +1,119 @@
+import json
+import libcst as cst
+from pathlib import Path
+import os
+
+
+def extract_snippets(filename):
+    """Returns (repo_name, snippet) tuples from the jsonl all_results file."""
+    with open(filename, encoding="utf-8") as f:
+        #print("Opened file:", filename)
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                repo_name = entry.get("repo_name", "<unknown>")
+                #print("Processing repo:", repo_name)
+                for match in entry.get("matches", []):
+                    #print("detected match, processing...")
+                    snippet = match.get("snippet", "").strip()
+                    if snippet:
+                        #print("GRIDDLE", repo_name, "YAYAYA", snippet)
+                        yield repo_name, snippet
+            except json.JSONDecodeError as e:
+                print(f"Skipping invalid JSON line: {e}")
+
+
+def try_parse(snippet):
+    """Try parsing a code snippet using libcst. TODO: check if we want to use a different library, but this seems pretty robust for our usecase so far."""
+    try:
+        # DOC says: parse_expression() works best for single expressions and parse_module() for blocks
+        node = cst.parse_expression(snippet)
+        #print("Parsed as expression")
+        return node
+    except Exception:
+        try:
+            node = cst.parse_module(snippet)
+            #print("Parsed as module")
+            return node
+        except Exception:
+            #print("Failed to parse snippet")
+            return None
+
+
+class SparkCallVisitor(cst.CSTVisitor):
+    """Collects DataFrame operations and UDF usages."""
+    PYSPARK_DF_METHODS = {
+        'alias', 'agg', 'collect', 'count', 'distinct', 'drop', 'filter', 'groupBy', 
+        'join', 'limit', 'orderBy', 'select', 'selectExpr', 'sort', 'union', 'where', 'withColumn'
+    }
+    THIRD_PARTY_LIBS = {"numpy", "pandas", "torch", "sklearn"}
+
+    def __init__(self):
+        self.funcs = set()
+        self.third_party_libs = set()
+        self.has_udf = False
+
+    def visit_Attribute(self, node):
+        name = node.attr.value
+        if name in self.PYSPARK_DF_METHODS:
+            self.funcs.add(name)
+
+    #find udfs and chained DF ops.
+    def visit_Call(self, node):
+        #TODO: handle more robustly.
+        if isinstance(node.func, cst.Attribute):
+            func_name = node.func.attr.value
+            if func_name in self.PYSPARK_DF_METHODS:
+                self.funcs.add(func_name)
+
+        code_repr = cst.Module([]).code_for_node(node.func)
+        if "udf" in code_repr:
+            self.has_udf = True
+
+    #TODO: define what third party libraries we actually care abt.
+    def visit_Import(self, node):
+        for alias in node.names:
+            name = alias.name.value
+            if name in self.THIRD_PARTY_LIBS: 
+                self.third_party_libs.add(name)
+
+    def visit_ImportFrom(self, node):
+        if node.module and node.module.value in self.THIRD_PARTY_LIBS:
+            self.third_party_libs.add(node.module.value)
+
+
+def analyze_file(filename) -> None:
+    """Parse JSONL and analyze each snippet."""
+    # Create results jsonl
+    os.makedirs("results", exist_ok=True)
+    summary_path = os.path.join("results", "ast_parsing_results.jsonl")
+
+    for repo, snippet in extract_snippets(filename):
+        tree = try_parse(snippet)
+        if not tree:
+            continue
+
+        visitor = SparkCallVisitor()
+        tree.visit(visitor)
+
+        if visitor.funcs or visitor.has_udf or visitor.third_party_libs:
+            data = {
+                "folder": repo,
+                "snippet": snippet,
+                "pyspark_ops": sorted(visitor.funcs) or [],
+                "uses_udf": visitor.has_udf,
+                "third_party_libs": sorted(visitor.third_party_libs) or []
+            }
+        
+            # append or write
+            with open(summary_path, "a") as f:
+                json.dump(data, f)
+                f.write("\n")  # JSONL format, one object per line
+
+
+if __name__ == "__main__":
+    filename = Path(__file__).parent.parent / "scraping" / "results" / "all_results.jsonl"
+    # filename = Path(__file__).parent.parent / "ast_parsing" / "sample_results.jsonl"
+    analyze_file(filename)
