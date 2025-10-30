@@ -13,11 +13,16 @@ class UDFInfo:
     registered_sql: bool = False
     third_party_dependencies: Set[str] = field(default_factory=set)
 
-    def __repr__(self) -> str:
-        return (
-            f"UDFInfo(name={self.name}, decorator={self.decorator}, "
-            f"applied_to_df={self.applied_to_df}, registered_sql={self.registered_sql})"
-        )
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "decorator": self.decorator,
+            "snippet": self.snippet,
+            "return_type": self.return_type,
+            "applied_to_df": self.applied_to_df,
+            "registered_sql": self.registered_sql,
+            "third_party_dependencies": sorted(self.third_party_dependencies),
+        }
 
 @dataclass
 class AnalysisResult:

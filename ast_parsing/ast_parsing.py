@@ -24,7 +24,10 @@ def extract_snippets(filename: Union[str, Path]) -> Generator[Tuple[str, str, Di
                 for udf in entry.get("udfs", []):
                     snippet = udf.get("def", "").strip()
                     if snippet:
-                        meta = {"calls": udf.get("calls", []) or []}
+                        meta = { #attach third party lib specifically to that UDFInfo. 
+                            "udf_name": udf.get("name"),
+                            "calls": udf.get("calls", []) or []
+                        }
                         yield repo_name, snippet, meta
 
                 #otherwise is df expr
@@ -176,6 +179,18 @@ def analyze_file(filename) -> List[AnalysisResult]:
             if lib:
                 visitor.third_party_libs.add(lib)
                 visitor.third_party_lib_freq[lib] += 1
+        
+        #attach declared libs to that UDFInfo
+        udf_name = meta.get("udf_name") if isinstance(meta, dict) else None
+        if udf_name and calls:
+            declared_libs = {c.get("library") for c in calls if c.get("library")}
+            if udf_name in visitor.udfs:
+                visitor.udfs[udf_name].third_party_dependencies.update(declared_libs)
+            else:
+                #add it now if didn't exist ebfore.
+                visitor.udfs[udf_name] = UDFInfo(name=udf_name, decorator=False, snippet=snippet)
+                visitor.udfs[udf_name].third_party_dependencies.update(declared_libs)
+                visitor.known_udfs.add(udf_name)
 
         if visitor.funcs or visitor.has_udf or visitor.third_party_libs:
             res = AnalysisResult(
