@@ -26,6 +26,8 @@ class UDFInfo:
 
 @dataclass
 class AnalysisResult:
+    repo_name: str
+    clone_url: Optional[str]
     path: str
     snippet: str
     pyspark_ops: List[str] = field(default_factory=list)
@@ -37,6 +39,8 @@ class AnalysisResult:
         Convert to a JSON-serializable dict. Keep keys stable for metrics.
         """
         return {
+            "repo_name": self.repo_name,
+            "clone_url": self.clone_url,
             "path": self.path,
             "snippet": self.snippet,
             "pyspark_ops": list(self.pyspark_ops),

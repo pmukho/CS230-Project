@@ -18,23 +18,34 @@ def extract_snippets(filename: Union[str, Path]) -> Generator[Tuple[str, str, Di
                 continue
             try:
                 entry = json.loads(line)
-                repo_name = entry.get("path", "<unknown>")
+                repo_name = entry.get("repo_name", "<unknown>")
+                clone_url = entry.get("clone_url")
+                for file_obj in entry.get("files", []) or []:
+                    file_path = file_obj.get("path", "<unknown_path>")
 
-                #process new udf entries
-                for udf in entry.get("udfs", []):
-                    snippet = udf.get("def", "").strip()
-                    if snippet:
-                        meta = { #attach third party lib specifically to that UDFInfo. 
-                            "udf_name": udf.get("name"),
-                            "calls": udf.get("calls", []) or []
-                        }
-                        yield repo_name, snippet, meta
+                    #process new udf entries
+                    for udf in file_obj.get("udfs", []):
+                        snippet = udf.get("definition", "").strip()
+                        if snippet:
+                            meta = { #attach third party lib specifically to that UDFInfo. 
+                                "udf_name": udf.get("name"),
+                                "calls": udf.get("calls", []) or [],
+                                "path": file_path,
+                                "clone_url": clone_url,
+                                "repo_name": repo_name,
+                            }
+                            yield repo_name, snippet, meta
 
-                #otherwise is df expr
-                for expr in entry.get("df_exprs", []):
-                    snippet = expr.strip() if isinstance(expr, str) else ""
-                    if snippet:
-                        yield repo_name, snippet, {}
+                    #otherwise is df expr
+                    for expr in file_obj.get("df_exprs", []):
+                        snippet = expr.strip() if isinstance(expr, str) else ""
+                        if snippet:
+                            meta = {
+                                    "path": file_path,
+                                    "clone_url": clone_url,
+                                    "repo_name": repo_name,
+                                }
+                            yield repo_name, snippet, meta
 
             except json.JSONDecodeError as e:
                 print(f"Skipping invalid JSON line: {e}")
@@ -104,13 +115,61 @@ class SparkCallVisitor(cst.CSTVisitor):
                     self.known_udfs.add(name)
             
             #TODO: Identify other cases that might be there, I'm prob missing smth.
+    
+    def _is_udf_call(self, call_node: cst.CSTNode) -> bool:
+        """
+        Detect if a node represents a udf factory/callee:
+        - Name('udf')
+        - Attribute(..., 'udf') like  pyspark.sql.functions.udf or F.udf
+        - Call whose callee is one of the above like a normal decorator @udf(...)
+        This way it is more robust to decorators being diff types of nodes.
+        """
+        # If it's a Call, inspect the callee
+        if isinstance(call_node, cst.Call):
+            callee = call_node.func
+        else:
+            callee = call_node
+
+        #direct name of udf (what we had before)
+        if isinstance(callee, cst.Name) and callee.value == "udf":
+            return True
+
+        # Attribute ending with .udf
+        if isinstance(callee, cst.Attribute) and getattr(callee.attr, "value", "") == "udf":
+            return True
+
+        #To be thorough: stringify the callee and look for '.udf' or 'udf' token at the end
+        try:
+            code = cst.Module([]).code_for_node(callee)
+            # check common patterns like "pyspark.sql.functions.udf" or "F.udf"
+            if ".udf" in code or code.strip() == "udf":
+                return True
+        except Exception:
+            pass
+
+        return False
 
     def visit_FunctionDef(self, node: cst.FunctionDef):
-        """Detect @udf decorator"""
-        is_udf_dec = any('udf' in getattr(d.decorator, 'value', '') for d in node.decorators)
-        if is_udf_dec:
-            self.udfs[node.name.value] = UDFInfo(name=node.name.value, decorator=True)
-            self.known_udfs.add(node.name.value)
+        """Detect @udf decorator (all types!)"""
+        for dec in node.decorators:
+            dec_node = dec.decorator  # types include Name, Attribute, or Call
+            # Case: @udf
+            if isinstance(dec_node, cst.Name) and dec_node.value == "udf":
+                self.udfs[node.name.value] = UDFInfo(name=node.name.value, decorator=True)
+                self.known_udfs.add(node.name.value)
+                return
+
+            # Case: @udf(...) or other Call wrapping a udf callee
+            if isinstance(dec_node, cst.Call) and self._is_udf_call(dec_node.func):
+                self.udfs[node.name.value] = UDFInfo(name=node.name.value, decorator=True)
+                self.known_udfs.add(node.name.value)
+                return
+
+            # Case: @something.udf
+            if isinstance(dec_node, cst.Attribute) and getattr(dec_node.attr, "value", "") == "udf":
+                self.udfs[node.name.value] = UDFInfo(name=node.name.value, decorator=True)
+                self.known_udfs.add(node.name.value)
+                return
     
     #find udfs and chained DF ops.
     def visit_Call(self, node: cst.Call):
@@ -164,7 +223,7 @@ class SparkCallVisitor(cst.CSTVisitor):
 def analyze_file(filename) -> List[AnalysisResult]:
     """Parse JSONL and analyze each snippet, return as new dataclass AnalysisResult."""
     output = []
-    for path, snippet, meta in extract_snippets(filename):
+    for repo_name, snippet, meta in extract_snippets(filename):
         tree = try_parse(snippet)
         if not tree:
             continue
@@ -192,12 +251,18 @@ def analyze_file(filename) -> List[AnalysisResult]:
                 visitor.udfs[udf_name].third_party_dependencies.update(declared_libs)
                 visitor.known_udfs.add(udf_name)
 
+        path = meta.get("path", "<unknown_path>") if isinstance(meta, dict) else "<unknown_path>"
+        clone_url = meta.get("clone_url") if isinstance(meta, dict) else None
+
         if visitor.funcs or visitor.has_udf or visitor.third_party_libs:
             res = AnalysisResult(
+                repo_name=repo_name,
+                clone_url=clone_url,
                 path=path,
                 snippet=snippet,
                 pyspark_ops=sorted(visitor.funcs),
-                udfs={name: repr(udf) for name, udf in visitor.udfs.items()},
+                udfs={name: (udf.to_dict() if hasattr(udf, "to_dict") else repr(udf))
+                      for name, udf in visitor.udfs.items()},
                 third_party_libs=sorted(visitor.third_party_libs),
             )
             output.append(res)
