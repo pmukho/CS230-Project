@@ -2,11 +2,15 @@ import json
 import libcst as cst
 from pathlib import Path
 import collections
-from typing import List, Dict, Any, Union, Optional
+from typing import List, Dict, Any, Union, Optional, Generator, Tuple
+from object_types import UDFInfo, AnalysisResult
 
+def extract_snippets(filename: Union[str, Path]) -> Generator[Tuple[str, str, Dict[str, Any]], None, None]:
+    """
+    reading the new-format input and yield (path, snippet, metadata) tuples.
 
-def extract_snippets(filename: Union[str, Path]):
-    """Returns (repo_name, snippet) tuples from the jsonl all_results file."""
+    example of meta is {"calls": [{"library": "random", "call": "randint"}, ...]} [from scraping readme doc]
+    """
     with open(filename, encoding="utf-8") as f:
         #print("Opened file:", filename)
         for line in f:
@@ -14,14 +18,21 @@ def extract_snippets(filename: Union[str, Path]):
                 continue
             try:
                 entry = json.loads(line)
-                repo_name = entry.get("repo_name", "<unknown>")
-                #print("Processing repo:", repo_name)
-                for match in entry.get("matches", []):
-                    #print("detected match, processing...")
-                    snippet = match.get("snippet", "").strip()
+                repo_name = entry.get("path", "<unknown>")
+
+                #process new udf entries
+                for udf in entry.get("udfs", []):
+                    snippet = udf.get("def", "").strip()
                     if snippet:
-                        #print("GRIDDLE", repo_name, "YAYAYA", snippet)
-                        yield repo_name, snippet
+                        meta = {"calls": udf.get("calls", []) or []}
+                        yield repo_name, snippet, meta
+
+                #otherwise is df expr
+                for expr in entry.get("df_exprs", []):
+                    snippet = expr.strip() if isinstance(expr, str) else ""
+                    if snippet:
+                        yield repo_name, snippet, {}
+
             except json.JSONDecodeError as e:
                 print(f"Skipping invalid JSON line: {e}")
 
@@ -32,23 +43,6 @@ def try_parse(snippet: str) -> Optional[cst.CSTNode]:
         return cst.parse_module(snippet)
     except Exception:
         return None
-
-class UDFInfo:
-    def __init__(self, name: str, decorator=False, snippet: str = "", return_type=None):
-        self.name = name
-        self.decorator = decorator
-        self.snippet = snippet
-        self.return_type = return_type
-        #for tracking metrics TODO: if we want to track more/other stuff. 
-        self.applied_to_df = False
-        self.registered_sql = False
-        self.third_party_dependencies = set()
-
-    def __repr__(self):
-        return (
-            f"UDFInfo(name={self.name}, decorator={self.decorator}, "
-            f"applied_to_df={self.applied_to_df}, registered_sql={self.registered_sql})"
-        )
 
 class SparkCallVisitor(cst.CSTVisitor):
     """Collects DataFrame operations and UDF usages."""
@@ -164,10 +158,10 @@ class SparkCallVisitor(cst.CSTVisitor):
             self.third_party_libs.add(module_name)
             self.third_party_lib_freq[module_name] += 1 #track more metrics
 
-def analyze_file(filename) -> None:
-    """Parse JSONL and analyze each snippet."""
+def analyze_file(filename) -> List[AnalysisResult]:
+    """Parse JSONL and analyze each snippet, return as new dataclass AnalysisResult."""
     output = []
-    for repo, snippet in extract_snippets(filename):
+    for path, snippet, meta in extract_snippets(filename):
         tree = try_parse(snippet)
         if not tree:
             continue
@@ -175,14 +169,23 @@ def analyze_file(filename) -> None:
         visitor = SparkCallVisitor()
         tree.visit(visitor)
 
+        #add new metadata.
+        calls = meta.get("calls", []) if isinstance(meta, dict) else []
+        for call in calls:
+            lib = call.get("library")
+            if lib:
+                visitor.third_party_libs.add(lib)
+                visitor.third_party_lib_freq[lib] += 1
+
         if visitor.funcs or visitor.has_udf or visitor.third_party_libs:
-            output.append({
-                "repo": repo,
-                "snippet": snippet,
-                "pyspark_ops": sorted(visitor.funcs),
-                "udfs": {name: repr(udf) for name, udf in visitor.udfs.items()},
-                "third_party_libs": sorted(visitor.third_party_libs),
-            })
+            res = AnalysisResult(
+                path=path,
+                snippet=snippet,
+                pyspark_ops=sorted(visitor.funcs),
+                udfs={name: repr(udf) for name, udf in visitor.udfs.items()},
+                third_party_libs=sorted(visitor.third_party_libs),
+            )
+            output.append(res)
     return output
 
 
