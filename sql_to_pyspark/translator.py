@@ -121,6 +121,44 @@ def translate_sql_to_pyspark(query: str) -> str:
         find_correlations(where_clause)
         return correlations if correlations else None
     
+    def extract_aggregate_from_expr(expr):
+        """
+        Traverse an expression dict to find the aggregate function.
+        Returns (agg_func, agg_col, template_expr)
+        template_expr is the original expr with the aggregate replaced by a placeholder string.
+        """
+        if type(expr) is dict:
+            # Check if this node IS the aggregate
+            if is_aggregate_function(expr) and not is_window_expression(expr):
+                func_name = list(expr.keys())[0]
+                col_val = expr[func_name]
+                return func_name.lower(), col_val, "__AGG_PLACEHOLDER__"
+            
+            # Recursive check
+            for k, v in expr.items():
+                if k == 'literal': continue
+                res = extract_aggregate_from_expr(v)
+                if res:
+                    agg_func, agg_col, sub_template = res
+                    # Return new dict with this value replaced
+                    new_expr = expr.copy()
+                    new_expr[k] = sub_template
+                    return agg_func, agg_col, new_expr
+            return None
+                    
+        elif type(expr) is list:
+            for i, item in enumerate(expr):
+                res = extract_aggregate_from_expr(item)
+                if res:
+                    agg_func, agg_col, sub_template = res
+                    # Reconstruct list
+                    new_list = list(expr)
+                    new_list[i] = sub_template
+                    return agg_func, agg_col, new_list
+            return None
+        
+        return None
+
     def translate_scalar_subquery_join(subquery_dict, alias_name, outer_table_info):
         """
         Translate a scalar subquery to PySpark using JOIN method.
@@ -132,25 +170,67 @@ def translate_sql_to_pyspark(query: str) -> str:
         if not select_data:
             return None
         
-        # Get the aggregate function
+        # Get the aggregate function and potential wrapper expression
         agg_func = None
         agg_column = None
+        template_expr = None
         
         if type(select_data) is dict and 'value' in select_data:
             value = select_data['value']
-            if type(value) is dict and is_aggregate_function(value):
-                # Get the function name and column
-                func_name = list(value.keys())[0]
-                agg_column = value[func_name]
-                agg_func = func_name.lower()
+            # Use helper to extract aggregate from complex expressions (e.g., avg(x) * 1.2)
+            res = extract_aggregate_from_expr(value)
+            if res:
+                agg_func, agg_column, template_expr = res
         
         if not agg_func:
             return None
         
+        # Helper to rebuild expression string from template
+        def rebuild_expr(tmpl, inner_agg_str):
+            if tmpl == "__AGG_PLACEHOLDER__":
+                return inner_agg_str
+            if type(tmpl) is dict:
+                # Check for arithmetic in template
+                arithmetic_map = {'add': '+', 'sub': '-', 'mul': '*', 'div': '/', 'mod': '%'}
+                
+                # Use translate_function logic but recursing manually to catch placeholder
+                func_name = list(tmpl.keys())[0]
+                args = tmpl[func_name]
+                
+                if type(args) is list:
+                    arg_strs = [rebuild_expr(a, inner_agg_str) for a in args]
+                    if func_name in arithmetic_map and len(arg_strs) == 2:
+                        return f"({arg_strs[0]} {arithmetic_map[func_name]} {arg_strs[1]})"
+                    pyspark_func = SPECIAL_FUNCTION_MAPPING.get(func_name, func_name.lower())
+                    return f'{pyspark_func}({", ".join(arg_strs)})'
+                else:
+                    arg_str = rebuild_expr(args, inner_agg_str)
+                    pyspark_func = SPECIAL_FUNCTION_MAPPING.get(func_name, func_name.lower())
+                    return f'{pyspark_func}({arg_str})'
+            elif type(tmpl) in (int, float):
+                return str(tmpl)
+            else:
+                return str(tmpl)
+        
+        # Store the template for later use in generating the agg expression
+        # The join builder will need to know if it's a simple agg or complex
+        
+        # Store the template for later use in generating the agg expression
+        # The join builder will need to know if it's a simple agg or complex
+        if agg_column == "*":
+            base_agg = f'{agg_func}(lit(1))'
+        else:
+            base_agg = f'{agg_func}(col("{agg_column}"))'
+            
+        full_agg_expr = rebuild_expr(template_expr, base_agg)
+
         # Get the FROM table
         from_table = subquery_dict.get('from')
         if type(from_table) is dict and 'value' in from_table:
             inner_table = from_table['value']
+            if type(inner_table) is dict:
+                # Recursively translate nested subquery
+                inner_table = f"({fn_genSQL_or_set(inner_table)})"
             inner_alias = from_table.get('name', 'subq')
         elif type(from_table) is str:
             inner_table = from_table
@@ -216,6 +296,7 @@ def translate_sql_to_pyspark(query: str) -> str:
             'inner_alias': inner_alias,
             'agg_func': agg_func,
             'agg_column': agg_column,
+            'full_agg_expr': full_agg_expr,
             'correlation_column': correlation_column,
             'outer_column': outer_column if correlation_column else None,
             'alias_name': alias_name,
@@ -396,7 +477,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                     elif type(left) in (int, float):
                         left_str = str(left)
                     else:
-                        left_str = str(left)
+                        left_str = translate_value(left)
                     
                     # Handle right operand
                     if type(right) is str:
@@ -422,13 +503,9 @@ def translate_sql_to_pyspark(query: str) -> str:
                         else:
                             # Default to column
                             right_str = f'col("{right}")'
-                    elif type(right) is dict and 'literal' in right:
-                        # Literal value
-                        lit_val = right['literal']
-                        if type(lit_val) is str:
-                            right_str = f"lit('{lit_val}')"
-                        else:
-                            right_str = f"lit({lit_val})"
+                    elif type(right) is dict:
+                        # Use updated translate_value which handles literals and arithmetic
+                        right_str = translate_value(right)
                     elif type(right) in (int, float):
                         right_str = str(right)
                     else:
@@ -465,12 +542,44 @@ def translate_sql_to_pyspark(query: str) -> str:
                     return f'col("{val}")'
         elif type(val) in (int, float):
             return str(val)
-        elif type(val) is dict and 'literal' in val:
-            lit_val = val['literal']
-            if type(lit_val) is str:
-                return f"lit('{lit_val}')"
-            else:
-                return f"lit({lit_val})"
+        elif type(val) is dict:
+            if 'literal' in val:
+                lit_val = val['literal']
+                if type(lit_val) is str:
+                    return f"lit('{lit_val}')"
+                else:
+                    return f"lit({lit_val})"
+            
+            # Check for arithmetic/functions
+            func_name = list(val.keys())[0]
+            
+            # Use translate_function for known operators/functions
+            # But we must ensure it doesn't just return str(val) fallback which created the issue
+            # Let's try to recursively translate using arithmetic map from translate_function
+            
+            # Map SQL arithmetic to PySpark operators
+            arithmetic_map = {
+                'add': '+',
+                'sub': '-',
+                'mul': '*',
+                'div': '/',
+                'mod': '%'
+            }
+            
+            if func_name in arithmetic_map:
+                args = val[func_name]
+                if type(args) is list and len(args) == 2:
+                    left = translate_value(args[0])
+                    right = translate_value(args[1])
+                    return f"({left} {arithmetic_map[func_name]} {right})"
+            
+            # Fallback to general function translation if not caught above
+            # Note: translate_function might need to be called here
+            translated = translate_function(val)
+            if translated:
+                return translated
+                
+            return str(val)
         else:
             return str(val)
     
@@ -752,101 +861,121 @@ def translate_sql_to_pyspark(query: str) -> str:
             result_from = format({ "from": value })
             result_from = result_from[5:]
         elif type(value) is dict:
+            # Check for direct set operation (union/intersect etc) in FROM
+            # e.g. from: {'union_all': [...]}
+            if _find_set_op_key(value):
+                result_from = f"({fn_genSQL_or_set(value)})"
             # Check if this is a subquery in FROM (derived table)
-            if "name" in value.keys() and "value" in value.keys() and type(value['value']) is dict:
+            elif "name" in value.keys() and "value" in value.keys() and type(value['value']) is dict:
                 # This is a subquery with an alias
                 subquery_sql = fn_genSQL_or_set(value['value'])
                 result_from = f"({subquery_sql}).alias(\"{value['name']}\")"
             elif "name" in value.keys():
                 result_from = result_from + value['value']+".alias(\""+value['name']+"\")"
             else:
-                result_from = result_from + value['value']+""
+                # Fallback: hope it has 'value'
+                val = value.get('value', '')
+                result_from = result_from + str(val) + ""
         elif type(value) is list:
-            # Handle JOINs - first element is the base table
-            base_table = None
+            # Handle JOINs and comma-separated tables (implicit cross joins)
+            # We want to build a chain: table1.crossJoin(table2).join(table3, ...)
+            
+            tables = []
             joins = []
             
-            # First pass: detect if this is a JOIN scenario
-            has_joins = False
-            for item_from in value:
-                if type(item_from) is dict and any(key in item_from for key in ['inner join', 'left join', 'right join', 'full outer join', 'cross join']):
-                    has_joins = True
-                    break
+            # Helper to process a table item (str or dict) into a PySpark DataFrame string
+            def process_table_item(item):
+                if type(item) is str:
+                    return item
+                elif type(item) is dict:
+                    if "name" in item and "value" in item:
+                         # Check for subquery
+                        if type(item['value']) is dict:
+                             subq = fn_genSQL_or_set(item['value'])
+                             return f"({subq}).alias(\"{item['name']}\")"
+                        return f'{item["value"]}.alias("{item["name"]}")'
+                    elif "value" in item:
+                        return item['value']
+                    # Handle explicit join dicts later
+                    return None
+                return str(item)
+
+            # First pass: Separate base tables from explicit joins
+            base_items = []
+            explicit_join_items = []
             
-            for idx, item_from in enumerate(value):
-                if type(item_from) is str:
-                    # Base table
-                    if base_table is None:
-                        base_table = item_from
-                    else:
-                        # Multiple string items (shouldn't happen in normal cases)
-                        base_table += "," + item_from
-                elif type(item_from) is dict:
-                    # Check if this is a JOIN
-                    join_type = None
-                    join_table = None
-                    join_condition = None
-                    
-                    # Detect join type
-                    if 'inner join' in item_from:
-                        join_type = 'inner'
-                        join_table = item_from['inner join']
-                    elif 'left join' in item_from:
-                        join_type = 'left'
-                        join_table = item_from['left join']
-                    elif 'right join' in item_from:
-                        join_type = 'right'
-                        join_table = item_from['right join']
-                    elif 'full outer join' in item_from:
-                        join_type = 'outer'
-                        join_table = item_from['full outer join']
-                    elif 'cross join' in item_from:
-                        join_type = 'cross'
-                        join_table = item_from['cross join']
-                    
-                    if join_type and join_table:
-                        # Get ON condition
-                        if 'on' in item_from:
-                            join_condition = translate_condition(item_from['on'])
-                        
-                        # Handle join table with alias
-                        if type(join_table) is dict and "name" in join_table:
-                            join_table_str = join_table['value'] + ".alias(\"" + join_table['name'] + "\")"
-                        elif type(join_table) is str:
-                            join_table_str = join_table
+            has_explicit_joins = False
+            for item in value:
+                if type(item) is dict and any(k in item for k in ['inner join', 'left join', 'right join', 'full outer join', 'cross join']):
+                    has_explicit_joins = True
+                    explicit_join_items.append(item)
+                else:
+                    base_items.append(item)
+            
+            # Process base items (comma separated -> cross joins)
+            if not base_items and not explicit_join_items:
+                return ""
+            
+            # The first item is the start of the chain
+            if base_items:
+                first = base_items[0]
+                result_from = process_table_item(first)
+                
+                # Subsequent base items are cross joins
+                for item in base_items[1:]:
+                    table_str = process_table_item(item)
+                    result_from += f".crossJoin({table_str})"
+            else:
+                # No base items? (unlikely in valid SQL, maybe starts with a JOIN?)
+                # Just take the table from the first join
+                # This is edge case handling
+                pass
+
+            # Process explicit joins
+            for item in explicit_join_items:
+                join_type = None
+                join_table_raw = None
+                join_condition = None
+                
+                if 'inner join' in item:
+                    join_type = 'inner'
+                    join_table_raw = item['inner join']
+                elif 'left join' in item:
+                    join_type = 'left'
+                    join_table_raw = item['left join']
+                elif 'right join' in item:
+                    join_type = 'right'
+                    join_table_raw = item['right join']
+                elif 'full outer join' in item:
+                    join_type = 'outer'
+                    join_table_raw = item['full outer join']
+                elif 'cross join' in item:
+                    join_type = 'cross'
+                    join_table_raw = item['cross join']
+                
+                if join_type:
+                    # Parse table
+                    join_table_str = ""
+                    if type(join_table_raw) is dict:
+                        if "name" in join_table_raw:
+                             if "value" in join_table_raw and type(join_table_raw['value']) is dict:
+                                 subq = fn_genSQL_or_set(join_table_raw['value'])
+                                 join_table_str = f"({subq}).alias(\"{join_table_raw['name']}\")"
+                             else:
+                                 join_table_str = f'{join_table_raw["value"]}.alias("{join_table_raw["name"]}")'
                         else:
-                            join_table_str = str(join_table)
-                        
-                        joins.append({
-                            'type': join_type,
-                            'table': join_table_str,
-                            'condition': join_condition
-                        })
-                    elif has_joins and idx == 0 and base_table is None:
-                        # First item in a JOIN scenario - this is the base table
-                        if "name" in item_from.keys():
-                            base_table = item_from['value'] + ".alias(\"" + item_from['name'] + "\")"
-                        elif "value" in item_from.keys():
-                            base_table = item_from['value']
-                    elif not has_joins:
-                        # Old logic for non-JOIN scenarios (comma-separated tables)
-                        if "name" in item_from.keys():
-                            result_from = result_from + item_from['value']+".alias(\""+item_from['name']+"\"),"
-                        elif "value" in item_from.keys():
-                            result_from = result_from + item_from['value']+","
-            
-            # Build the result
-            if base_table and joins:
-                result_from = base_table
-                for join in joins:
-                    if join['condition']:
-                        result_from += f"\\\n.join({join['table']}, {join['condition']}, '{join['type']}')"
+                             join_table_str = str(join_table_raw)
                     else:
-                        # CROSS JOIN doesn't need condition
-                        result_from += f"\\\n.crossJoin({join['table']})"
-            elif base_table:
-                result_from = base_table
-            # else: result_from already set by old logic (comma-separated)
+                        join_table_str = str(join_table_raw)
+
+                    # Parse condition
+                    if 'on' in item:
+                        join_condition = translate_condition(item['on'])
+                    
+                    if join_type == 'cross':
+                        result_from += f".crossJoin({join_table_str})"
+                    else:
+                        result_from += f".join({join_table_str}, {join_condition}, '{join_type}')"
                 
         return result_from
             
@@ -920,7 +1049,16 @@ def translate_sql_to_pyspark(query: str) -> str:
                         func_str = func_str + f".over({build_window_spec(value['over'])})"
                     result_select = result_select + func_str + ","
             else:
-                result_select = result_select + "\""+value['value']+"\""
+                if 'value' in value:
+                    result_select = result_select + "\""+value['value']+"\""
+                else:
+                    # Fallback for complex expressions/conditions in select
+                    # e.g. case when, or boolean conditions
+                    res = translate_condition(value)
+                    if res:
+                         result_select = result_select + res + ","
+                    else:
+                         result_select = result_select + str(value) + ","
         elif type(value) is list:
             for item_select in value:
                 if type(item_select) is dict:
@@ -1043,9 +1181,34 @@ def translate_sql_to_pyspark(query: str) -> str:
 
     def fn_groupby(value):
         # print(f'translating groupby: {value}')
-        result_groupby=""
-        result_groupby = format({ "groupby": value })[9:]
-        return result_groupby
+        
+        def process_group_item(item):
+            if type(item) is dict:
+                if 'value' in item:
+                    val = item['value']
+                    # Check for simple column vs expression
+                    if type(val) is str:
+                         # Use col() if it looks like a column, otherwise literal? 
+                         # Actually groupBy usually takes strings or col objects.
+                         # Safest is probably strings if simple, or col() expressions.
+                         return f'"{val}"'
+                    else:
+                        # Complex expression
+                        return translate_value(val)
+                return str(item)
+            elif type(item) is str:
+                return f'"{item}"'
+            else:
+                return str(item)
+
+        items = []
+        if type(value) is list:
+            for item in value:
+                items.append(process_group_item(item))
+        else:
+            items.append(process_group_item(value))
+            
+        return ", ".join(items)
     
     def fn_having(value, agg_aliases=None):
         """
@@ -1089,20 +1252,23 @@ def translate_sql_to_pyspark(query: str) -> str:
         result_having_sql = format({ "having": modified_value })[7:]
         return result_having_sql
 
-    def fn_agg(query):
-        v_parse = parse(query)
-        print(f'\n\n fn_agg: {v_parse}')
+    def fn_agg(data):
+        # v_parse = parse(query)
+        # print(f'\n\n fn_agg: {v_parse}')
         v_agg = ""
         agg_aliases = {}  # Map from aggregate expression to alias
         
+        if "select" not in data:
+            return "", {}
+
         # Handle both single (dict) and multiple (list) select items
-        select_items = v_parse["select"]
+        select_items = data["select"]
         if type(select_items) is dict:
             select_items = [select_items]
         
         for i in select_items:
             print(f'fn_agg: i: {i}')
-            if type(i["value"]) is dict and is_aggregate_function(i["value"]) and not is_window_expression(i):
+            if type(i) is dict and "value" in i and type(i["value"]) is dict and is_aggregate_function(i["value"]) and not is_window_expression(i):
                 print(f'fn_agg: i is an aggregate function')
                 # Only process actual aggregate functions
                 for key,value in i["value"].items():
@@ -1164,10 +1330,19 @@ def translate_sql_to_pyspark(query: str) -> str:
         v_fn_from = v_fn_where = v_fn_groupby = v_fn_agg = v_fn_select = v_fn_orderby = v_fn_limit = v_fn_having = ""
         v_fn_distinct = False
         has_aggregate = False
-        scalar_subqueries = []  # Store info about scalar subqueries to join
+        scalar_subqueries_where = []  # Subqueries to join before WHERE
+        scalar_subqueries_having = [] # Subqueries to join after AGGREGATION (before HAVING)
         use_spark_sql_fallback = False
         outer_table_alias = None  # Track the outer table alias for column qualification
         agg_aliases = {}  # Store aggregate function aliases for HAVING clause
+        
+        # Extract outer table alias FIRST
+        if "from" in data:
+            from_value = data["from"]
+            if type(from_value) is dict and 'name' in from_value:
+                outer_table_alias = from_value['name']
+            elif type(from_value) is str:
+                outer_table_alias = None
         
         # First pass: detect scalar subqueries in SELECT and check nesting depth
         if "select" in data:
@@ -1185,15 +1360,17 @@ def translate_sql_to_pyspark(query: str) -> str:
                         alias_name = item.get('name', 'subquery_result')
                         
                         # Check nesting depth for fallback decision
-                        if nesting_depth >= 3:
+                        if nesting_depth >= 10:
                             # Too complex - use spark.sql fallback
                             use_spark_sql_fallback = True
                             break
                         else:
-                            # Try JOIN method
-                            subq_info = translate_scalar_subquery_join(value, alias_name, None)
+                            # Try JOIN method - treated as WHERE-scope (joined before aggregation)
+                            # unless we want to support scalar subqueries in SELECT that depend on aggregation?
+                            # Standard SQL scalar subqueries in SELECT are usually independent or correlated to row.
+                            subq_info = translate_scalar_subquery_join(value, alias_name, outer_table_alias)
                             if subq_info:
-                                scalar_subqueries.append(subq_info)
+                                scalar_subqueries_where.append(subq_info)
                             else:
                                 # Couldn't translate - mark for fallback
                                 use_spark_sql_fallback = True
@@ -1203,19 +1380,69 @@ def translate_sql_to_pyspark(query: str) -> str:
                     if is_aggregate_function(value):
                         has_aggregate = True
         
+        # Helper to process scalar subqueries in conditions (WHERE/HAVING)
+        def process_where_subqueries(condition, scalar_subqs):
+            if type(condition) is not dict:
+                return condition
+            
+            # Check for comparison operators
+            ops = ['gt', 'gte', 'lt', 'lte', 'eq', 'neq', 'ne']
+            for op in ops:
+                if op in condition:
+                    operands = condition[op]
+                    if type(operands) is list and len(operands) == 2:
+                        left, right = operands[0], operands[1]
+                        
+                        # Check if right is a subquery
+                        if type(right) is dict and 'select' in right:
+                            # Create alias
+                            # Use id() to ensure unique alias even if multiple subqs
+                            alias_name = f"subq_{len(scalar_subqs)}_{id(right) % 1000}"
+                            subq_info = translate_scalar_subquery_join(right, alias_name, outer_table_alias)
+                            if subq_info:
+                                scalar_subqs.append(subq_info)
+                                # Replace right operand with column reference
+                                # The join will create: agg_alias.alias_name
+                                agg_alias = f"{alias_name}_agg"
+                                # Return modified condition
+                                new_right = f"{agg_alias}.{alias_name}"
+                                return {op: [left, new_right]}
+                        
+                        # Check if left is a subquery
+                        if type(left) is dict and 'select' in left:
+                            alias_name = f"subq_{len(scalar_subqs)}_{id(left) % 1000}"
+                            subq_info = translate_scalar_subquery_join(left, alias_name, outer_table_alias)
+                            if subq_info:
+                                scalar_subqs.append(subq_info)
+                                agg_alias = f"{alias_name}_agg"
+                                new_left = f"{agg_alias}.{alias_name}"
+                                return {op: [new_left, right]}
+            
+            # Recursive check for AND/OR
+            for logic in ['and', 'or']:
+                if logic in condition:
+                    items = condition[logic]
+                    if type(items) is list:
+                        return {logic: [process_where_subqueries(i, scalar_subqs) for i in items]}
+            
+            return condition
+
+        # Process scalar subqueries in WHERE clause
+        if "where" in data:
+            where_val = data["where"]
+            # Process and update the WHERE clause in data
+            data['where'] = process_where_subqueries(where_val, scalar_subqueries_where)
+
+        # Process scalar subqueries in HAVING clause
+        if "having" in data:
+            having_val = data["having"]
+            # Use separate list for HAVING subqueries
+            data['having'] = process_where_subqueries(having_val, scalar_subqueries_having)
+
         # If fallback is needed, return spark.sql() wrapper
         if use_spark_sql_fallback:
             sql_query = format(data)
             return f'spark.sql("""{sql_query}""")'
-        
-        # Extract outer table alias BEFORE processing SELECT
-        # (since SELECT may need this info for column qualification)
-        if "from" in data:
-            from_value = data["from"]
-            if type(from_value) is dict and 'name' in from_value:
-                outer_table_alias = from_value['name']
-            elif type(from_value) is str:
-                outer_table_alias = None
         
         # Check if SELECT has aggregate functions (not just any function). Skip window expressions.
         if "select" in data:
@@ -1244,7 +1471,8 @@ def translate_sql_to_pyspark(query: str) -> str:
 
             #handle agg - call if there's a groupby OR if there are aggregate functions (excluding windowed aggs)
             if str(key) =="groupby" or (str(key) == "select" and has_aggregate):
-                v_fn_agg, agg_aliases = fn_agg(query)
+                # FIX: pass data, not query
+                v_fn_agg, agg_aliases = fn_agg(data)
             
             #handle having
             if str(key) =="having":
@@ -1252,58 +1480,65 @@ def translate_sql_to_pyspark(query: str) -> str:
 
             #handle select
             if str(key) =="select":
-                v_fn_select = fn_select(value, outer_table_alias, scalar_subqueries, agg_aliases)
+                # Pass scalar_subqueries_where for qualification if needed (legacy behavior)
+                # Actually fn_select uses it to decide if it should qualify columns.
+                # We should probably pass both or just check if any exist.
+                all_scalar_subqs = scalar_subqueries_where + scalar_subqueries_having
+                v_fn_select = fn_select(value, outer_table_alias, all_scalar_subqs, agg_aliases)
             
             #handle select_distinct
             if str(key) =="select_distinct":
-                v_fn_select = fn_select(value, outer_table_alias, scalar_subqueries, agg_aliases)
+                all_scalar_subqs = scalar_subqueries_where + scalar_subqueries_having
+                v_fn_select = fn_select(value, outer_table_alias, all_scalar_subqs, agg_aliases)
                 v_fn_distinct = True
 
             #handle sort
             if str(key) =="orderby":
-                v_fn_orderby = fn_orderby(query)
+                v_fn_orderby = fn_orderby(query) # Still using query for orderby? Check fn_orderby implementation
 
             #handle limit
             if str(key) =="limit":
-                v_fn_limit = fn_limit(query)
+                v_fn_limit = fn_limit(query) # Still using query for limit?
+
+        # Define helper to append scalar subquery joins
+        def append_scalar_joins(stmt, subqs):
+            for subq_info in subqs:
+                # Build the aggregation DataFrame
+                inner_table = subq_info['inner_table']
+                inner_alias = subq_info['inner_alias']
+                correlation_column = subq_info['correlation_column']
+                outer_column = subq_info['outer_column']
+                alias_name = subq_info['alias_name']
+                
+                # Use the full aggregation expression
+                agg_expr_str = subq_info.get('full_agg_expr')
+                if not agg_expr_str:
+                    # Fallback
+                    func = subq_info['agg_func']
+                    col_name = subq_info['agg_column']
+                    agg_expr_str = f'{func}(col("{col_name}"))' if col_name != "*" else f'{func}(lit(1))'
+                
+                # Build the join
+                agg_alias = f"{alias_name}_agg"
+                
+                # Build join - using LEFT join to preserve all outer rows
+                if correlation_column and outer_column:
+                    # Format: .join(inner_table.groupBy("correlation_col").agg(...), condition, 'left')
+                    stmt += f'\\\n.join({inner_table}.alias("{inner_alias}").groupBy("{correlation_column}").agg({agg_expr_str}.alias("{alias_name}")).alias("{agg_alias}"), col("{outer_column}") == col("{agg_alias}.{correlation_column}"), "left")'
+                else:
+                    # Uncorrelated scalar subquery (single row)
+                    # Use cross join
+                    stmt += f'\\\n.crossJoin({inner_table}.alias("{inner_alias}").agg({agg_expr_str}.alias("{alias_name}")).alias("{agg_alias}"))'
+            return stmt
 
         v_final_stmt = ""
         if v_fn_from:
             v_final_stmt = v_final_stmt + v_fn_from
         
-        # Add scalar subquery joins (after FROM, before WHERE)
-        for subq_info in scalar_subqueries:
-            # Build the aggregation DataFrame
-            inner_table = subq_info['inner_table']
-            inner_alias = subq_info['inner_alias']
-            agg_func = subq_info['agg_func']
-            agg_column = subq_info['agg_column']
-            correlation_column = subq_info['correlation_column']
-            outer_column = subq_info['outer_column']
-            alias_name = subq_info['alias_name']
-            
-            # Generate aggregation code
-            if agg_column == "*":
-                agg_expr = f'{agg_func}(lit(1))'
-            else:
-                agg_expr = f'{agg_func}(col("{agg_column}"))'
-            
-            # Build the join
-            # Need to create an aggregated temp DataFrame and join it
-            agg_alias = f"{alias_name}_agg"
-            
-            # Add filter for other conditions if needed
-            filter_clause = ""
-            if subq_info.get('other_filters'):
-                # TODO: handle additional filters
-                pass
-            
-            # Build join - using LEFT join to preserve all outer rows
-            if correlation_column and outer_column:
-                # Format: .join(inner_table.groupBy("correlation_col").agg(...), condition, 'left')
-                v_final_stmt += f'\\\n.join({inner_table}.alias("{inner_alias}").groupBy("{correlation_column}").agg({agg_expr}.alias("{alias_name}")).alias("{agg_alias}"), col("{outer_column}") == col("{agg_alias}.{correlation_column}"), "left")'
+        # Add scalar subquery joins for WHERE clause (before WHERE)
+        v_final_stmt = append_scalar_joins(v_final_stmt, scalar_subqueries_where)
         
-        # Handle WHERE clause - check if it's an IN subquery
+        # Handle WHERE clause
         if v_fn_where:
             if type(v_fn_where) is dict and v_fn_where.get('type') == 'in_subquery':
                 # Convert IN subquery to semi-join
@@ -1331,25 +1566,26 @@ def translate_sql_to_pyspark(query: str) -> str:
                     subquery_sql = format(subquery_data)
                     v_final_stmt = v_final_stmt + f"\\\n.filter(\"{outer_column} IN ({subquery_sql})\")"
             else:
-                # Regular filter - check if it's already PySpark syntax or SQL string
+                # Regular filter
                 if "col(" in v_fn_where:
-                    # Already translated to PySpark column expressions
                     v_final_stmt = v_final_stmt + "\\\n.filter("+v_fn_where+")"
                 else:
-                    # SQL string syntax
                     v_final_stmt = v_final_stmt + "\\\n.filter(\""+v_fn_where+"\")"
         
         if v_fn_groupby:
-            v_final_stmt = v_final_stmt + "\\\n.groupBy(\""+v_fn_groupby+"\")"
+            v_final_stmt = v_final_stmt + "\\\n.groupBy("+v_fn_groupby+")"
         if v_fn_agg:
             v_final_stmt = v_final_stmt + "\\\n.agg("+v_fn_agg+")"
+            
+        # Add scalar subquery joins for HAVING clause (AFTER AGGREGATION)
+        # This attaches the scalar value to the grouped results
+        v_final_stmt = append_scalar_joins(v_final_stmt, scalar_subqueries_having)
+            
         if v_fn_having:
             # Check if HAVING is already PySpark syntax or SQL string
             if "col(" in v_fn_having:
-                # Already translated to PySpark column expressions
                 v_final_stmt = v_final_stmt + "\\\n.filter("+v_fn_having+")"
             else:
-                # SQL string syntax
                 v_final_stmt = v_final_stmt + "\\\n.filter(\""+v_fn_having+"\")"
         if v_fn_select:
             v_final_stmt = v_final_stmt + "\\\n.select("+v_fn_select+")"
@@ -1417,7 +1653,25 @@ def translate_sql_to_pyspark(query: str) -> str:
         norm_key = key.replace('_', ' ').lower()
         return _fold(norm_key, translated_parts)
 
-    return fn_genSQL_or_set(v_json)
+    # Handle CTEs (WITH clause) at the top level
+    cte_code = ""
+    if "with" in v_json:
+        cte_block = v_json.pop("with")
+        # Ensure list
+        if type(cte_block) is not list:
+            cte_block = [cte_block]
+            
+        for cte in cte_block:
+            name = cte.get("name")
+            value = cte.get("value")
+            if name and value:
+                # Recursively translate the CTE query
+                cte_pyspark = fn_genSQL_or_set(value)
+                cte_code += f"{name} = {cte_pyspark}\n"
+
+    # Translate the main query
+    main_query = fn_genSQL_or_set(v_json)
+    return cte_code + main_query
 
 if __name__ == "__main__":
     # query = """
@@ -1444,9 +1698,10 @@ if __name__ == "__main__":
         # "SELECT UPPER(name), LOWER(city) FROM customers",
         # "SELECT DISTINCT country FROM customers",
         # "SELECT name FROM employees ORDER BY salary DESC",
-        "SELECT name, department, AVG(salary) FROM employees GROUP BY department",
-        "SELECT AVG(salary) FROM employees GROUP BY department",
+        # "SELECT name, department, AVG(salary) FROM employees GROUP BY department",
+        # "SELECT AVG(salary) FROM employees GROUP BY department",
         # "SELECT department, COUNT(*) FROM employees GROUP BY department HAVING COUNT(*) > 5",
+        "SELECT department, SUM(salary) FROM employees GROUP BY department HAVING SUM(salary) > (SELECT AVG(sum_sal) FROM (SELECT SUM(salary) as sum_sal FROM employees GROUP BY department) t)",
         # "SELECT * FROM sales LIMIT 10",
         # "SELECT SUBSTRING(name, 1, 3) FROM users",
         # "SELECT CONCAT(first_name, ' ', last_name) FROM employees",
@@ -1459,14 +1714,98 @@ if __name__ == "__main__":
         # "SELECT STR_TO_DATE('01,5,2020', '%d,%m,%Y') FROM dates",
         # "SELECT name FROM employees WHERE department_id IN (SELECT id FROM departments WHERE region = 'West')",
         # "SELECT * FROM (SELECT id, name FROM users WHERE active = 1) AS active_users",
-        "SELECT department, (SELECT COUNT(*) FROM employees e WHERE e.dept_id = d.id) AS emp_count FROM departments d",
+        # "SELECT department, (SELECT COUNT(*) FROM employees e WHERE e.dept_id = d.id) AS emp_count FROM departments d",
         # "SELECT id FROM table1 UNION SELECT id FROM table2",
         # "SELECT name FROM table1 INTERSECT SELECT name FROM table2",
         # "SELECT name FROM table1 EXCEPT SELECT name FROM table2",
-        "SELECT name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC) FROM employees",
-        "SELECT id, SUM(sales) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM transactions",
-        "SELECT SUM(sales) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM transactions",
-        "SELECT employee_name, salary FROM employees ORDER BY (salary - AVG(salary) OVER (PARTITION BY department)) DESC"
+#         "SELECT name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC) FROM employees",
+#         "SELECT id, SUM(sales) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM transactions",
+#         "SELECT SUM(sales) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM transactions",
+#         "SELECT employee_name, salary FROM employees ORDER BY (salary - AVG(salary) OVER (PARTITION BY department)) DESC",
+#         """
+#         with customer_total_return as
+# (select sr_customer_sk as ctr_customer_sk
+# ,sr_store_sk as ctr_store_sk
+# ,sum(SR_FEE) as ctr_total_return
+# from store_returns
+# ,date_dim
+# where sr_returned_date_sk = d_date_sk
+# and d_year =2000
+# group by sr_customer_sk
+# ,sr_store_sk)
+#  select  c_customer_id
+# from customer_total_return ctr1
+# ,store
+# ,customer
+# where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2
+# from customer_total_return ctr2
+# where ctr1.ctr_store_sk = ctr2.ctr_store_sk)
+# and s_store_sk = ctr1.ctr_store_sk
+# and s_state = 'TN'
+# and ctr1.ctr_customer_sk = c_customer_sk
+# order by c_customer_id
+# LIMIT 100;
+#         """,
+#         """
+#         with wscs as
+#  (select sold_date_sk
+#         ,sales_price
+#   from (select ws_sold_date_sk sold_date_sk
+#               ,ws_ext_sales_price sales_price
+#         from web_sales 
+#         union all
+#         select cs_sold_date_sk sold_date_sk
+#               ,cs_ext_sales_price sales_price
+#         from catalog_sales)),
+#  wswscs as 
+#  (select d_week_seq,
+#         sum(case when (d_day_name='Sunday') then sales_price else null end) sun_sales,
+#         sum(case when (d_day_name='Monday') then sales_price else null end) mon_sales,
+#         sum(case when (d_day_name='Tuesday') then sales_price else  null end) tue_sales,
+#         sum(case when (d_day_name='Wednesday') then sales_price else null end) wed_sales,
+#         sum(case when (d_day_name='Thursday') then sales_price else null end) thu_sales,
+#         sum(case when (d_day_name='Friday') then sales_price else null end) fri_sales,
+#         sum(case when (d_day_name='Saturday') then sales_price else null end) sat_sales
+#  from wscs
+#      ,date_dim
+#  where d_date_sk = sold_date_sk
+#  group by d_week_seq)
+#  select d_week_seq1
+#        ,round(sun_sales1/sun_sales2,2)
+#        ,round(mon_sales1/mon_sales2,2)
+#        ,round(tue_sales1/tue_sales2,2)
+#        ,round(wed_sales1/wed_sales2,2)
+#        ,round(thu_sales1/thu_sales2,2)
+#        ,round(fri_sales1/fri_sales2,2)
+#        ,round(sat_sales1/sat_sales2,2)
+#  from
+#  (select wswscs.d_week_seq d_week_seq1
+#         ,sun_sales sun_sales1
+#         ,mon_sales mon_sales1
+#         ,tue_sales tue_sales1
+#         ,wed_sales wed_sales1
+#         ,thu_sales thu_sales1
+#         ,fri_sales fri_sales1
+#         ,sat_sales sat_sales1
+#   from wswscs,date_dim 
+#   where date_dim.d_week_seq = wswscs.d_week_seq and
+#         d_year = 2001) y,
+#  (select wswscs.d_week_seq d_week_seq2
+#         ,sun_sales sun_sales2
+#         ,mon_sales mon_sales2
+#         ,tue_sales tue_sales2
+#         ,wed_sales wed_sales2
+#         ,thu_sales thu_sales2
+#         ,fri_sales fri_sales2
+#         ,sat_sales sat_sales2
+#   from wswscs
+#       ,date_dim 
+#   where date_dim.d_week_seq = wswscs.d_week_seq and
+#         d_year = 2001+1) z
+#  where d_week_seq1=d_week_seq2-53
+#  order by d_week_seq1;
+#         """,
+        
     ]
 
     for query in querys:
