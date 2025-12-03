@@ -33,7 +33,10 @@ Output is stored in `./scraping/results/summary.jsonl` where each line is a vali
       udfs: [
         {
           name: string,
-          def: string, #def not definition.
+          alias: string, (non-decorator udf registrator allows naming)
+          body: string,
+          args: [string], (string format should be name: type),
+          output: string, (output type, default value is often StringType())
           calls: [
             {
               library: string,
