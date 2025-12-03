@@ -9,7 +9,7 @@ def translate_sql_to_pyspark(query: str) -> str:
     v_parse = parse(query)
     v_json = json.loads(json.dumps(v_parse,indent=4))
 
-    print(f'v_json: {v_json}')
+    # print(f'v_json: {v_json}')
     
     # Define aggregate functions (functions that combine multiple rows)
     AGGREGATE_FUNCTIONS = {
@@ -536,13 +536,16 @@ def translate_sql_to_pyspark(query: str) -> str:
                     return f"lit('{val}')"
             else:
                 # General case: check for obvious literals (spaces, special chars)
-                if ' ' in val or not val.replace('_', '').isalnum():
+                # Allow dots in column names (e.g. table.column)
+                if ' ' in val or not val.replace('_', '').replace('.', '').isalnum():
                     return f"lit('{val}')"
                 else:
                     return f'col("{val}")'
         elif type(val) in (int, float):
             return str(val)
         elif type(val) is dict:
+            if 'null' in val:
+                return 'lit(None)'
             if 'literal' in val:
                 lit_val = val['literal']
                 if type(lit_val) is str:
@@ -761,6 +764,14 @@ def translate_sql_to_pyspark(query: str) -> str:
             else:
                 return str(func_dict)
         
+        # Handle literal values (sometimes passed as function-like dicts)
+        if 'literal' in func_dict:
+            lit_val = func_dict['literal']
+            if type(lit_val) is str:
+                return f"lit('{lit_val}')"
+            else:
+                return f"lit({lit_val})"
+
         # Get the function name and arguments
         func_name = list(func_dict.keys())[0]
         func_args = func_dict[func_name]
@@ -1020,7 +1031,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                     if has_outer_alias and has_scalar_subqueries and not '.' in str(value['value']):
                         result_select = result_select + f'col("{outer_alias}.{value["value"]}").alias("{value["name"]}"),'
                     else:
-                        result_select = result_select + "\""+value['value']+"\".alias(\""+value['name']+"\"),"
+                        result_select = result_select + f'col("{value["value"]}").alias("{value["name"]}"),'
             elif "value" in value.keys() and type(value['value']) is dict:
                 if is_aggregate_function(value['value']) and not is_window_expression(value):
                     # Aggregate function - skip, handled by fn_agg
@@ -1124,7 +1135,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                                     func_str = func_str + f".over({build_window_spec(item_select['over'])})"
                                     result_select = result_select + func_str + f'.alias("{item_select["name"]}"),'
                                 else:
-                                    result_select = result_select + "\""+item_select['value']+"\".alias(\""+item_select['name']+"\"),"
+                                    result_select = result_select + f'col("{item_select["value"]}").alias("{item_select["name"]}"),'
                         else:
                             # Column without alias - qualify if we have outer alias and scalar subqueries
                             if has_outer_alias and has_scalar_subqueries and not '.' in str(item_select['value']):
@@ -1267,29 +1278,39 @@ def translate_sql_to_pyspark(query: str) -> str:
             select_items = [select_items]
         
         for i in select_items:
-            print(f'fn_agg: i: {i}')
+            # print(f'fn_agg: i: {i}')
             if type(i) is dict and "value" in i and type(i["value"]) is dict and is_aggregate_function(i["value"]) and not is_window_expression(i):
-                print(f'fn_agg: i is an aggregate function')
+                # print(f'fn_agg: i is an aggregate function')
                 # Only process actual aggregate functions
                 for key,value in i["value"].items():
-                    print(f'fn_agg: key: {key}, value: {value}')
+                    # print(f'fn_agg: key: {key}, value: {value}')
+                    
+                    # Translate the argument of the aggregate function
+                    if type(value) is dict:
+                        arg_translated = translate_value(value)
+                    else:
+                        arg_translated = f'col("{value}")' if type(value) is str and value != "*" else f'lit(1)' if value == "*" else str(value)
+
                     # Only add alias if SQL has AS clause
                     if "name" in i:
                         alias_name = i["name"]
-                        v_agg = v_agg + (key+"("+"col(\""+str(value)+"\")"+").alias('"+alias_name+"')") +","
+                        v_agg = v_agg + (f"{key}({arg_translated}).alias('{alias_name}')") +","
                     else:
                         # No alias - create automatic alias
                         # Format: function_name_column (e.g., count_star, sum_salary)
-                        col_name = str(value).replace("*", "star").replace(".", "_")
+                        if type(value) is str:
+                            col_name = str(value).replace("*", "star").replace(".", "_")
+                        else:
+                            col_name = "expression"
                         alias_name = f"{key.lower()}_{col_name}"
-                        v_agg = v_agg + (key+"("+"col(\""+str(value)+"\")"+").alias('"+alias_name+"')") +","
+                        v_agg = v_agg + (f"{key}({arg_translated}).alias('{alias_name}')") +","
                     
                     # Store mapping for HAVING clause translation
                     agg_expr = f"{key.upper()}({value})"
                     agg_aliases[agg_expr] = alias_name
         
         v_agg = v_agg.replace("\n", "")
-        print(f'fn_agg returns: v_agg: {v_agg}, agg_aliases: {agg_aliases}')
+        # print(f'fn_agg returns: v_agg: {v_agg}, agg_aliases: {agg_aliases}')
         return v_agg[:-1] if v_agg else "", agg_aliases
 
 
@@ -1673,21 +1694,30 @@ def translate_sql_to_pyspark(query: str) -> str:
     main_query = fn_genSQL_or_set(v_json)
     return cte_code + main_query
 
+import sys
 if __name__ == "__main__":
-    # query = """
-    # SELECT product_id,
-    #     Count(star_rating) as total_rating,
-    #     Max(star_rating)   AS best_rating,
-    #     Min(star_rating)   AS worst_rating
-    # FROM   tbl_books
-    # WHERE  verified_purchase = 'Y'
-    #     AND review_date BETWEEN '1995-07-22' AND '2015-08-31'
-    #     AND marketplace IN ( 'DE', 'US', 'UK', 'FR', 'JP' )
-    # GROUP  BY product_id
-    # ORDER  BY total_rating asc,product_id desc,best_rating
-    # LIMIT  10;
-    # """
-    querys = [
+    if len(sys.argv) != 2:
+        print("Usage: python translator.py input.file")
+    if len(sys.argv) == 2:
+        input_file = sys.argv[1]
+        with open(input_file, 'r') as file:
+            content = file.read()
+        first_with = content.lower().find("with")
+        first_select = content.lower().find("select")
+        if first_with == -1 and first_select == -1:
+            raise ValueError("No with or select found in the file")
+        if first_with != -1 and first_select != -1:
+            if first_with < first_select:
+                queries = [content[first_with:]]
+            else:
+                queries = [content[first_select:]]
+        else:
+            if first_with != -1:
+                queries = [content[first_with:]]
+            else:
+                queries = [content[first_select:]]
+    else:
+        queries = [
         # "SELECT * FROM employees",
         # "SELECT id, name FROM customers",
         # "SELECT id FROM users WHERE age > 30",
@@ -1701,7 +1731,7 @@ if __name__ == "__main__":
         # "SELECT name, department, AVG(salary) FROM employees GROUP BY department",
         # "SELECT AVG(salary) FROM employees GROUP BY department",
         # "SELECT department, COUNT(*) FROM employees GROUP BY department HAVING COUNT(*) > 5",
-        "SELECT department, SUM(salary) FROM employees GROUP BY department HAVING SUM(salary) > (SELECT AVG(sum_sal) FROM (SELECT SUM(salary) as sum_sal FROM employees GROUP BY department) t)",
+        # "SELECT department, SUM(salary) FROM employees GROUP BY department HAVING SUM(salary) > (SELECT AVG(sum_sal) FROM (SELECT SUM(salary) as sum_sal FROM employees GROUP BY department) t)",
         # "SELECT * FROM sales LIMIT 10",
         # "SELECT SUBSTRING(name, 1, 3) FROM users",
         # "SELECT CONCAT(first_name, ' ', last_name) FROM employees",
@@ -1805,10 +1835,29 @@ if __name__ == "__main__":
 #  where d_week_seq1=d_week_seq2-53
 #  order by d_week_seq1;
 #         """,
-        
-    ]
+            """
+select  dt.d_year 
+       ,item.i_brand_id brand_id 
+       ,item.i_brand brand
+       ,sum(ss_ext_sales_price) sum_agg
+ from  date_dim dt 
+      ,store_sales
+      ,item
+ where dt.d_date_sk = store_sales.ss_sold_date_sk
+   and store_sales.ss_item_sk = item.i_item_sk
+   and item.i_manufact_id = 436
+   and dt.d_moy=12
+ group by dt.d_year
+      ,item.i_brand
+      ,item.i_brand_id
+ order by dt.d_year
+         ,sum_agg desc
+         ,brand_id
+ LIMIT 100;
+            """
+        ]
 
-    for query in querys:
+    for query in queries:
         print(query)
         print(translate_sql_to_pyspark(query))
         print("-"*100)
