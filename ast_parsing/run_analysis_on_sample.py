@@ -7,7 +7,7 @@ import os
 
 from ast_parsing import analyze_file
 
-SAMPLE_PATH = "../scraping/results/summary-useful-200.jsonl"
+SAMPLE_PATH = "scraping/results/summary-useful-200.jsonl"
 OUT_PATH = "results/analysis_results.jsonl"
 
 def write_results_jsonl(results, out_path):

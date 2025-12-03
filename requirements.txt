@@ -6,3 +6,8 @@ semgrep
 nbformat
 nbconvert
 libcst>=1.2.0
+pandas
+matplotlib
+seaborn
+mo_sql_parsing
+pytest
