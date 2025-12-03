@@ -8,3 +8,5 @@
 
 # ignore results files
 results/
+# ignore java build dir
+build/

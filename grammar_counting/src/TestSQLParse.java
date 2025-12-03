@@ -4,8 +4,8 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.util.HashMap;
 import java.util.Map;
-import sparkql.SqlBaseParser;
-import sparkql.SqlBaseLexer;
+import org.example.SqlBaseParser;
+import org.example.SqlBaseLexer;
 
 public class TestSQLParse {
     public static void main(String[] args) throws Exception {
