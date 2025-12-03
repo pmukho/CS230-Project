@@ -9,7 +9,7 @@ import org.example.SqlBaseLexer;
 
 public class TestSQLParse {
     public static void main(String[] args) throws Exception {
-        String inputFile = "/home/pmukho/classes/cs230/proj/grammar_counting/test.txt"; // your SQL file
+        String inputFile = ""; // your SQL file
         InputStream is = new FileInputStream(inputFile);
 
         // Create CharStream from file
