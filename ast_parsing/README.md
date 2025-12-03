@@ -1,5 +1,8 @@
 # Transforming Scraped Data into AST Trees and Parsing It
 
+Run with grammar like: `python main.py -i .\sample_input_typed.jsonl -o .\snippet_features_output.jsonl --top 25`
+
+
 ## Prereqs
 
 1. Python 3.10 (tested with 3.10.18)
