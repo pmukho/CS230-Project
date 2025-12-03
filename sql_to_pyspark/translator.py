@@ -66,7 +66,7 @@ def translate_sql_to_pyspark(query: str) -> str:
         max_depth = current_depth
         
         # Check if this is a SELECT query (subquery)
-        if 'select' in query_dict:
+        if 'select' in query_dict or 'select_distinct' in query_dict:
             current_depth += 1
             max_depth = max(max_depth, current_depth)
         
@@ -166,7 +166,7 @@ def translate_sql_to_pyspark(query: str) -> str:
         """
         # print(f'translating scalar subquery join: {subquery_dict}')
         # Extract the aggregate function from SELECT
-        select_data = subquery_dict.get('select')
+        select_data = subquery_dict.get('select') or subquery_dict.get('select_distinct')
         if not select_data:
             return None
         
@@ -183,7 +183,17 @@ def translate_sql_to_pyspark(query: str) -> str:
                 agg_func, agg_column, template_expr = res
         
         if not agg_func:
-            return None
+            # Fallback for non-aggregate scalar subqueries (e.g. SELECT distinct col)
+            # Treat as first() which is appropriate for scalar single-row results
+            if type(select_data) is dict and 'value' in select_data:
+                 val = select_data['value']
+                 if type(val) is str:
+                     agg_func = 'first'
+                     agg_column = val
+                     template_expr = "__AGG_PLACEHOLDER__"
+            
+            if not agg_func:
+                return None
         
         # Helper to rebuild expression string from template
         def rebuild_expr(tmpl, inner_agg_str):
@@ -1269,11 +1279,11 @@ def translate_sql_to_pyspark(query: str) -> str:
         v_agg = ""
         agg_aliases = {}  # Map from aggregate expression to alias
         
-        if "select" not in data:
+        if "select" not in data and "select_distinct" not in data:
             return "", {}
 
         # Handle both single (dict) and multiple (list) select items
-        select_items = data["select"]
+        select_items = data.get("select") or data.get("select_distinct")
         if type(select_items) is dict:
             select_items = [select_items]
         
@@ -1366,8 +1376,8 @@ def translate_sql_to_pyspark(query: str) -> str:
                 outer_table_alias = None
         
         # First pass: detect scalar subqueries in SELECT and check nesting depth
-        if "select" in data:
-            select_value = data["select"]
+        select_value = data.get("select") or data.get("select_distinct")
+        if select_value:
             select_items = [select_value] if type(select_value) is dict else select_value
             
             for item in select_items:
@@ -1375,7 +1385,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                     value = item["value"]
                     
                     # Check if this is a scalar subquery
-                    if type(value) is dict and 'select' in value:
+                    if type(value) is dict and ('select' in value or 'select_distinct' in value):
                         # This is a scalar subquery
                         nesting_depth = calculate_nesting_depth(value)
                         alias_name = item.get('name', 'subquery_result')
@@ -1402,51 +1412,36 @@ def translate_sql_to_pyspark(query: str) -> str:
                         has_aggregate = True
         
         # Helper to process scalar subqueries in conditions (WHERE/HAVING)
-        def process_where_subqueries(condition, scalar_subqs):
-            if type(condition) is not dict:
-                return condition
+        def process_where_subqueries(expr, scalar_subqs):
+            if type(expr) is not dict:
+                return expr
             
-            # Check for comparison operators
-            ops = ['gt', 'gte', 'lt', 'lte', 'eq', 'neq', 'ne']
-            for op in ops:
-                if op in condition:
-                    operands = condition[op]
-                    if type(operands) is list and len(operands) == 2:
-                        left, right = operands[0], operands[1]
-                        
-                        # Check if right is a subquery
-                        if type(right) is dict and 'select' in right:
-                            # Create alias
-                            # Use id() to ensure unique alias even if multiple subqs
-                            alias_name = f"subq_{len(scalar_subqs)}_{id(right) % 1000}"
-                            subq_info = translate_scalar_subquery_join(right, alias_name, outer_table_alias)
-                            if subq_info:
-                                scalar_subqs.append(subq_info)
-                                # Replace right operand with column reference
-                                # The join will create: agg_alias.alias_name
-                                agg_alias = f"{alias_name}_agg"
-                                # Return modified condition
-                                new_right = f"{agg_alias}.{alias_name}"
-                                return {op: [left, new_right]}
-                        
-                        # Check if left is a subquery
-                        if type(left) is dict and 'select' in left:
-                            alias_name = f"subq_{len(scalar_subqs)}_{id(left) % 1000}"
-                            subq_info = translate_scalar_subquery_join(left, alias_name, outer_table_alias)
-                            if subq_info:
-                                scalar_subqs.append(subq_info)
-                                agg_alias = f"{alias_name}_agg"
-                                new_left = f"{agg_alias}.{alias_name}"
-                                return {op: [new_left, right]}
-            
-            # Recursive check for AND/OR
-            for logic in ['and', 'or']:
-                if logic in condition:
-                    items = condition[logic]
-                    if type(items) is list:
-                        return {logic: [process_where_subqueries(i, scalar_subqs) for i in items]}
-            
-            return condition
+            # Check if this node IS a subquery
+            if 'select' in expr or 'select_distinct' in expr:
+                 alias_name = f"subq_{len(scalar_subqs)}_{id(expr) % 1000}"
+                 subq_info = translate_scalar_subquery_join(expr, alias_name, outer_table_alias)
+                 if subq_info:
+                     scalar_subqs.append(subq_info)
+                     agg_alias = f"{alias_name}_agg"
+                     # Return the column reference that will be valid after join
+                     return f"{agg_alias}.{alias_name}"
+                 return expr
+
+            # Recurse
+            new_expr = {}
+            for k, v in expr.items():
+                # Skip recursion for IN/EXISTS/NOT IN subqueries - they are handled separately
+                if k in ['in', 'nin', 'not in', 'exists']:
+                    new_expr[k] = v
+                    continue
+                
+                if type(v) is list:
+                    new_expr[k] = [process_where_subqueries(i, scalar_subqs) for i in v]
+                elif type(v) is dict:
+                    new_expr[k] = process_where_subqueries(v, scalar_subqs)
+                else:
+                    new_expr[k] = v
+            return new_expr
 
         # Process scalar subqueries in WHERE clause
         if "where" in data:
@@ -1466,8 +1461,8 @@ def translate_sql_to_pyspark(query: str) -> str:
             return f'spark.sql("""{sql_query}""")'
         
         # Check if SELECT has aggregate functions (not just any function). Skip window expressions.
-        if "select" in data:
-            select_value = data["select"]
+        select_value = data.get("select") or data.get("select_distinct")
+        if select_value:
             if type(select_value) is dict and "value" in select_value:
                 has_aggregate = (is_aggregate_function(select_value["value"]) and not is_window_expression(select_value))
             elif type(select_value) is list:
@@ -1491,7 +1486,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                 v_fn_groupby = fn_groupby(value)
 
             #handle agg - call if there's a groupby OR if there are aggregate functions (excluding windowed aggs)
-            if str(key) =="groupby" or (str(key) == "select" and has_aggregate):
+            if str(key) =="groupby" or ((str(key) == "select" or str(key) == "select_distinct") and has_aggregate):
                 # FIX: pass data, not query
                 v_fn_agg, agg_aliases = fn_agg(data)
             
@@ -1530,6 +1525,27 @@ def translate_sql_to_pyspark(query: str) -> str:
                 correlation_column = subq_info['correlation_column']
                 outer_column = subq_info['outer_column']
                 alias_name = subq_info['alias_name']
+                other_filters = subq_info.get('other_filters', [])
+                
+                # Apply filters to inner table
+                if other_filters:
+                    filter_str = ""
+                    for cond in other_filters:
+                        translated_cond = translate_condition(cond)
+                        if translated_cond:
+                             if filter_str:
+                                 filter_str += f" & ({translated_cond})"
+                             else:
+                                 filter_str = f"({translated_cond})"
+                    
+                    if filter_str:
+                        # Ensure we don't double wrap if inner_table is already an expression string
+                        if not inner_table.endswith(")"):
+                             # It might be a table name 'date_dim'
+                             inner_table = f"{inner_table}.filter({filter_str})"
+                        else:
+                             # It might be '(subquery)'
+                             inner_table = f"{inner_table}.filter({filter_str})"
                 
                 # Use the full aggregation expression
                 agg_expr_str = subq_info.get('full_agg_expr')
