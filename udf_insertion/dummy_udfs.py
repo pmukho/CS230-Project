@@ -20,6 +20,40 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, date
 from decimal import Decimal
 import inspect
+import math
+import json
+import base64
+import re
+import uuid
+import html
+
+# Optional heavy deps commonly referenced in PySpark code samples. Import
+# lazily/fail-soft so this module remains cheap to import during analysis.
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+
+try:
+    import pyspark.sql.functions as F  # type: ignore
+    import pyspark.sql.types as T  # type: ignore
+    from pyspark.sql.types import (
+        StringType,
+        IntegerType,
+        BooleanType,
+        DateType,
+        TimestampType,
+        DecimalType,
+    )
+except Exception:
+    F = None
+    T = None
+    StringType = IntegerType = BooleanType = DateType = TimestampType = DecimalType = None
 
 __all__ = [
     # functions
@@ -27,6 +61,8 @@ __all__ = [
     "concat",
     "timestamp_to_date",
     "to_decimal_str",
+    "unescape_html",
+    "regex_replace",
     "kw_only_scale",
     # helpers
     "make_pyspark_udf",
@@ -57,12 +93,24 @@ def to_decimal_str(x: Decimal) -> str:
 def kw_only_scale(a: int, *, scale: int = 2) -> int:
     """Multiply `a` by keyword-only `scale` parameter."""
     return a * scale
+
+
+def unescape_html(s: str) -> str:
+    """Return the HTML-unescaped version of `s` using `html.unescape`."""
+    return html.unescape(s)
+
+
+def regex_replace(s: str, pattern: str, repl: str) -> str:
+    """Replace occurrences matching `pattern` in `s` with `repl` using `re.sub`."""
+    return re.sub(pattern, repl, s)
 # A small registry of the functions above for convenience
 all_simple_functions = [
     add,
     concat,
     timestamp_to_date,
     to_decimal_str,
+    unescape_html,
+    regex_replace,
     kw_only_scale,
 ]
 
