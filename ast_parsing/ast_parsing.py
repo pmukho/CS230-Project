@@ -1,9 +1,18 @@
 import json
 import libcst as cst
 from pathlib import Path
+import sys
 import collections
-from typing import List, Dict, Any, Union, Optional, Generator, Tuple
+from dataclasses import dataclass
+from typing import List, Dict, Any, Union, Optional, Generator, Tuple, Set
 from object_types import UDFInfo, AnalysisResult
+
+
+@dataclass
+class SparkSnippetSummary:
+    pyspark_ops: Set[str]
+    third_party_libs: Set[str]
+    udfs: Dict[str, UDFInfo]
 
 def extract_snippets(filename: Union[str, Path]) -> Generator[Tuple[str, str, Dict[str, Any]], None, None]:
     """
@@ -23,11 +32,17 @@ def extract_snippets(filename: Union[str, Path]) -> Generator[Tuple[str, str, Di
                 for file_obj in entry.get("files", []) or []:
                     file_path = file_obj.get("path", "<unknown_path>")
 
-                    #process new udf entries
-                    for udf in file_obj.get("udfs", []):
-                        snippet = udf.get("body", "").strip()
+                    # process new udf entries; accept multiple possible keys for the UDF source
+                    for udf in file_obj.get("udfs", []) or []:
+                        # some scrapers use different keys: 'def', 'definition', 'code', 'function'
+                        snippet = None
+                        for key in ("body", "def", "definition", "code", "function"):
+                            val = udf.get(key) if isinstance(udf, dict) else None
+                            if isinstance(val, str) and val.strip():
+                                snippet = val.strip()
+                                break
                         if snippet:
-                            meta = { #attach third party lib specifically to that UDFInfo. 
+                            meta = { # attach third party lib specifically to that UDFInfo.
                                 "udf_name": udf.get("name"),
                                 "calls": udf.get("calls", []) or [],
                                 "path": file_path,
@@ -206,6 +221,14 @@ class SparkCallVisitor(cst.CSTVisitor):
             for arg in node.args:
                 self._mark_udf_applied(arg.value)
 
+    def to_summary(self) -> "SparkSnippetSummary":
+        """Return a compact dataclass summary of this snippet's findings."""
+        return SparkSnippetSummary(
+            pyspark_ops=set(self.funcs),
+            third_party_libs=set(self.third_party_libs),
+            udfs=dict(self.udfs),
+        )
+
     #TODO: define what third party libraries we actually care abt.
     def visit_Import(self, node):
         for alias in node.names:
@@ -269,7 +292,49 @@ def analyze_file(filename) -> List[AnalysisResult]:
     return output
 
 
-# if __name__ == "__main__":
-#     #filename = Path(__file__).parent.parent / "scraping" / "results" / "all_results.jsonl"
-#     filename = Path(__file__).parent.parent / "ast_parsing" / "sample_results.jsonl"
-#     analyze_file(filename)
+if __name__ == "__main__":
+    # Usage: python ast_parsing.py [path/to/input.jsonl]
+    # If no path is provided, default to `ingrid_cherrypick_existing_udf.jsonl` in this folder.
+    if len(sys.argv) > 1:
+        input_path = Path(sys.argv[1])
+    else:
+        input_path = Path(__file__).parent / "sample_input_typed.jsonl"
+
+    if not input_path.exists():
+        print(f"Input file not found: {input_path}\nPlease provide a valid JSONL file path as the first argument.")
+        sys.exit(1)
+
+    results = analyze_file(input_path)
+
+    # Print a short summary to console
+    print(f"Found {len(results)} analysis results from {input_path}")
+    if results:
+        print("Showing up to first 20 results:\n")
+        for i, r in enumerate(results[:20], start=1):
+            try:
+                print(f"--- Result {i} ---")
+                print(json.dumps(r.to_dict(), indent=2, ensure_ascii=False))
+            except Exception:
+                # fallback to repr if something unexpected
+                print(repr(r))
+
+    # --- small usage demo for SparkSnippetSummary ---
+    print("\nDemo: SparkSnippetSummary for up to 5 snippets from the input:\n")
+    demo_count = 0
+    for repo_name, snippet, meta in extract_snippets(input_path):
+        if demo_count >= 5:
+            break
+        tree = try_parse(snippet)
+        if not tree:
+            continue
+        visitor = SparkCallVisitor()
+        tree.visit(visitor)
+        summary = visitor.to_summary()
+
+        print(f"Snippet from repo={repo_name} path={meta.get('path') if isinstance(meta, dict) else '<unknown>'}:")
+        print(f"  pyspark_ops: {sorted(summary.pyspark_ops)}")
+        print(f"  third_party_libs: {sorted(summary.third_party_libs)}")
+        # show udfs as dicts
+        udfs_serialized = {k: (v.to_dict() if hasattr(v, 'to_dict') else repr(v)) for k, v in summary.udfs.items()}
+        print(f"  udfs: {json.dumps(udfs_serialized, ensure_ascii=False)}\n")
+        demo_count += 1

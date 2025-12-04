@@ -1,5 +1,8 @@
 # Transforming Scraped Data into AST Trees and Parsing It
 
+Run with grammar like: `python main.py -i .\sample_input_typed.jsonl -o .\snippet_features_output.jsonl --top 25`
+
+
 ## Prereqs
 
 1. Python 3.10 (tested with 3.10.18)
@@ -14,12 +17,3 @@
    pip install -r requirements.txt
    ```
 3. Run the ast_parsing.py script and expect results to be stored in `.results/ast_parsing_results.jsonl`
-
-## Analysis Output Explained
-
-Each line in the `jsonl` output is matched like the schema given below
-
-```json
-{
-}
-```
