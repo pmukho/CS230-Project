@@ -1,0 +1,33 @@
+Processing scraping/results/summary-udf-inputs-typed.jsonl -> .snippet_features.jsonl ...
+Wrote snippet features to: .snippet_features.jsonl
+Top (all) global tokens:
+  DF_OP::select: 2500
+  DF_OP::count: 1286
+  DF_OP::groupBy: 1246
+  DF_OP::filter: 1018
+  DF_OP::alias: 750
+  DF_OP::agg: 487
+  DF_OP::join: 379
+  DF_OP::orderBy: 260
+  DF_OP::distinct: 207
+  DF_OP::limit: 174
+  DF_OP::withColumn: 143
+  DF_OP::where: 49
+  DF_OP::selectExpr: 38
+  DF_OP::cube: 20
+  DF_OP::drop: 19
+  DF_OP::withColumnRenamed: 18
+  DF_OP::pivot: 15
+  DF_OP::dropDuplicates: 14
+  DF_OP::collect: 13
+  DF_OP::dropna: 13
+  DF_OP::unionAll: 11
+  DF_OP::sort: 8
+  DF_OP::subtract: 7
+  DF_OP::sampleBy: 4
+  DF_OP::fillna: 4
+  DF_OP::sample: 3
+  DF_OP::union: 2
+  DF_OP::intersect: 2
+  DF_OP::exceptAll: 1
+  DF_OP::rollup: 1
