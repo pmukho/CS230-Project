@@ -25,7 +25,7 @@ def extract_snippets(filename: Union[str, Path]) -> Generator[Tuple[str, str, Di
 
                     #process new udf entries
                     for udf in file_obj.get("udfs", []):
-                        snippet = udf.get("def", "").strip()
+                        snippet = udf.get("body", "").strip()
                         if snippet:
                             meta = { #attach third party lib specifically to that UDFInfo. 
                                 "udf_name": udf.get("name"),
