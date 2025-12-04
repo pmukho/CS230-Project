@@ -1,0 +1,13 @@
+Processing snippets_after_semicolon.jsonl -> .snippets.jsonl ...
+Wrote snippet features to: .snippets.jsonl
+Top (all) global tokens:
+  DF_OP::alias: 17
+  DF_OP::select: 17
+  DF_OP::filter: 17
+  DF_OP::agg: 17
+  DF_OP::orderBy: 15
+  DF_OP::groupBy: 15
+  DF_OP::limit: 14
+  DF_OP::join: 4
+  DF_OP::union: 4
+  DF_OP::intersect: 2

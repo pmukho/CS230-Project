@@ -64,6 +64,14 @@ __all__ = [
     "unescape_html",
     "regex_replace",
     "kw_only_scale",
+    "to_float_or_none",
+    "split_to_list",
+    "map_to_upper",
+    "bytes_to_base64",
+    "sum_vars",
+    "gen_id_list",
+    "dummy_identity",
+    "bool_flag",
     # helpers
     "make_pyspark_udf",
     "all_simple_functions",
@@ -103,6 +111,51 @@ def unescape_html(s: str) -> str:
 def regex_replace(s: str, pattern: str, repl: str) -> str:
     """Replace occurrences matching `pattern` in `s` with `repl` using `re.sub`."""
     return re.sub(pattern, repl, s)
+
+
+def to_float_or_none(s: Optional[str]) -> Optional[float]:
+    """Attempt to parse a string to float; return None on failure."""
+    if s is None:
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def split_to_list(s: str, sep: Optional[str] = None) -> List[str]:
+    """Split a string into a list using `sep` (None uses any whitespace)."""
+    return s.split(sep)
+
+
+def map_to_upper(items: List[str]) -> List[str]:
+    """Map list of strings to uppercase versions."""
+    return [i.upper() for i in items]
+
+
+def bytes_to_base64(b: bytes) -> str:
+    """Return base64-encoded representation of bytes."""
+    return base64.b64encode(b).decode("ascii")
+
+
+def sum_vars(*args: int) -> int:
+    """Sum a variable number of integer arguments."""
+    return sum(args)
+
+
+def gen_id_list(n: int) -> List[int]:
+    """Generate a list of n integer IDs starting at 1."""
+    return list(range(1, max(0, int(n)) + 1))
+
+
+def dummy_identity(x: Any) -> Any:
+    """Identity function that returns its single argument unchanged."""
+    return x
+
+
+def bool_flag(x: Any) -> bool:
+    """Return True if `x` is truthy, otherwise False."""
+    return bool(x)
 # A small registry of the functions above for convenience
 all_simple_functions = [
     add,
@@ -112,6 +165,14 @@ all_simple_functions = [
     unescape_html,
     regex_replace,
     kw_only_scale,
+    to_float_or_none,
+    split_to_list,
+    map_to_upper,
+    bytes_to_base64,
+    sum_vars,
+    gen_id_list,
+    dummy_identity,
+    bool_flag,
 ]
 
 

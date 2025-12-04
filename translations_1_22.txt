@@ -1,0 +1,1115 @@
+Processing file: query_1.sql
+with customer_total_return as
+(select sr_customer_sk as ctr_customer_sk
+,sr_store_sk as ctr_store_sk
+,sum(SR_FEE) as ctr_total_return
+from store_returns
+,date_dim
+where sr_returned_date_sk = d_date_sk
+and d_year =2000
+group by sr_customer_sk
+,sr_store_sk)
+ select  c_customer_id
+from customer_total_return ctr1
+,store
+,customer
+where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2
+from customer_total_return ctr2
+where ctr1.ctr_store_sk = ctr2.ctr_store_sk)
+and s_store_sk = ctr1.ctr_store_sk
+and s_state = 'TN'
+and ctr1.ctr_customer_sk = c_customer_sk
+order by c_customer_id
+LIMIT 100;
+
+
+
+customer_total_return = store_returns.crossJoin(date_dim)\
+.filter((col("sr_returned_date_sk") == col("d_date_sk")) & (col("d_year") == 2000))\
+.groupBy("sr_customer_sk", "sr_store_sk")\
+.agg(sum(col("SR_FEE")).alias('ctr_total_return'))\
+.select(col("sr_customer_sk").alias("ctr_customer_sk"),col("sr_store_sk").alias("ctr_store_sk"),"ctr_total_return")
+customer_total_return.alias("ctr1").crossJoin(store).crossJoin(customer)\
+.join((customer_total_return.alias("ctr2")).alias("ctr2").groupBy("ctr2.ctr_store_sk").agg((avg(col("ctr_total_return")) * 1.2).alias("subq_0_928")).alias("subq_0_928_agg"), col("ctr1.ctr_store_sk") == col("subq_0_928_agg.ctr2.ctr_store_sk"), "left")\
+.filter((col("ctr1.ctr_total_return") > col("subq_0_928_agg.subq_0_928")) & (col("s_store_sk") == col("ctr1.ctr_store_sk")) & (col("s_state") == lit('TN')) & (col("ctr1.ctr_customer_sk") == col("c_customer_sk")))\
+.select("c_customer_id")\
+.orderBy(col("c_customer_id").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_2.sql
+with wscs as
+ (select sold_date_sk
+        ,sales_price
+  from (select ws_sold_date_sk sold_date_sk
+              ,ws_ext_sales_price sales_price
+        from web_sales 
+        union all
+        select cs_sold_date_sk sold_date_sk
+              ,cs_ext_sales_price sales_price
+        from catalog_sales)),
+ wswscs as 
+ (select d_week_seq,
+        sum(case when (d_day_name='Sunday') then sales_price else null end) sun_sales,
+        sum(case when (d_day_name='Monday') then sales_price else null end) mon_sales,
+        sum(case when (d_day_name='Tuesday') then sales_price else  null end) tue_sales,
+        sum(case when (d_day_name='Wednesday') then sales_price else null end) wed_sales,
+        sum(case when (d_day_name='Thursday') then sales_price else null end) thu_sales,
+        sum(case when (d_day_name='Friday') then sales_price else null end) fri_sales,
+        sum(case when (d_day_name='Saturday') then sales_price else null end) sat_sales
+ from wscs
+     ,date_dim
+ where d_date_sk = sold_date_sk
+ group by d_week_seq)
+ select d_week_seq1
+       ,round(sun_sales1/sun_sales2,2)
+       ,round(mon_sales1/mon_sales2,2)
+       ,round(tue_sales1/tue_sales2,2)
+       ,round(wed_sales1/wed_sales2,2)
+       ,round(thu_sales1/thu_sales2,2)
+       ,round(fri_sales1/fri_sales2,2)
+       ,round(sat_sales1/sat_sales2,2)
+ from
+ (select wswscs.d_week_seq d_week_seq1
+        ,sun_sales sun_sales1
+        ,mon_sales mon_sales1
+        ,tue_sales tue_sales1
+        ,wed_sales wed_sales1
+        ,thu_sales thu_sales1
+        ,fri_sales fri_sales1
+        ,sat_sales sat_sales1
+  from wswscs,date_dim 
+  where date_dim.d_week_seq = wswscs.d_week_seq and
+        d_year = 2001) y,
+ (select wswscs.d_week_seq d_week_seq2
+        ,sun_sales sun_sales2
+        ,mon_sales mon_sales2
+        ,tue_sales tue_sales2
+        ,wed_sales wed_sales2
+        ,thu_sales thu_sales2
+        ,fri_sales fri_sales2
+        ,sat_sales sat_sales2
+  from wswscs
+      ,date_dim 
+  where date_dim.d_week_seq = wswscs.d_week_seq and
+        d_year = 2001+1) z
+ where d_week_seq1=d_week_seq2-53
+ order by d_week_seq1;
+
+
+
+wscs = ((web_sales\
+.select(col("ws_sold_date_sk").alias("sold_date_sk"),col("ws_ext_sales_price").alias("sales_price"))).union((catalog_sales\
+.select(col("cs_sold_date_sk").alias("sold_date_sk"),col("cs_ext_sales_price").alias("sales_price")))))\
+.select("sold_date_sk","sales_price")
+wswscs = wscs.crossJoin(date_dim)\
+.filter(col("d_date_sk") == col("sold_date_sk"))\
+.groupBy("d_week_seq")\
+.agg(sum(when(col("d_day_name") == lit('Sunday'), col("sales_price")).otherwise(lit(None))).alias('sun_sales'),sum(when(col("d_day_name") == lit('Monday'), col("sales_price")).otherwise(lit(None))).alias('mon_sales'),sum(when(col("d_day_name") == lit('Tuesday'), col("sales_price")).otherwise(lit(None))).alias('tue_sales'),sum(when(col("d_day_name") == lit('Wednesday'), col("sales_price")).otherwise(lit(None))).alias('wed_sales'),sum(when(col("d_day_name") == lit('Thursday'), col("sales_price")).otherwise(lit(None))).alias('thu_sales'),sum(when(col("d_day_name") == lit('Friday'), col("sales_price")).otherwise(lit(None))).alias('fri_sales'),sum(when(col("d_day_name") == lit('Saturday'), col("sales_price")).otherwise(lit(None))).alias('sat_sales'))\
+.select("d_week_seq","sun_sales","mon_sales","tue_sales","wed_sales","thu_sales","fri_sales","sat_sales")
+(wswscs.crossJoin(date_dim)\
+.filter((col("date_dim.d_week_seq") == col("wswscs.d_week_seq")) & (col("d_year") == 2001))\
+.select(col("wswscs.d_week_seq").alias("d_week_seq1"),col("sun_sales").alias("sun_sales1"),col("mon_sales").alias("mon_sales1"),col("tue_sales").alias("tue_sales1"),col("wed_sales").alias("wed_sales1"),col("thu_sales").alias("thu_sales1"),col("fri_sales").alias("fri_sales1"),col("sat_sales").alias("sat_sales1"))).alias("y").crossJoin((wswscs.crossJoin(date_dim)\
+.filter((col("date_dim.d_week_seq") == col("wswscs.d_week_seq")) & (col("d_year") == (2001 + 1)))\
+.select(col("wswscs.d_week_seq").alias("d_week_seq2"),col("sun_sales").alias("sun_sales2"),col("mon_sales").alias("mon_sales2"),col("tue_sales").alias("tue_sales2"),col("wed_sales").alias("wed_sales2"),col("thu_sales").alias("thu_sales2"),col("fri_sales").alias("fri_sales2"),col("sat_sales").alias("sat_sales2"))).alias("z"))\
+.filter(col("d_week_seq1") == (col("d_week_seq2") - 53))\
+.select("d_week_seq1",round((col("sun_sales1") / col("sun_sales2")), 2),round((col("mon_sales1") / col("mon_sales2")), 2),round((col("tue_sales1") / col("tue_sales2")), 2),round((col("wed_sales1") / col("wed_sales2")), 2),round((col("thu_sales1") / col("thu_sales2")), 2),round((col("fri_sales1") / col("fri_sales2")), 2),round((col("sat_sales1") / col("sat_sales2")), 2))\
+.orderBy(col("d_week_seq1").asc())
+----------------------------------------------------------------------------------------------------
+Processing file: query_3.sql
+select  dt.d_year 
+       ,item.i_brand_id brand_id 
+       ,item.i_brand brand
+       ,sum(ss_ext_sales_price) sum_agg
+ from  date_dim dt 
+      ,store_sales
+      ,item
+ where dt.d_date_sk = store_sales.ss_sold_date_sk
+   and store_sales.ss_item_sk = item.i_item_sk
+   and item.i_manufact_id = 436
+   and dt.d_moy=12
+ group by dt.d_year
+      ,item.i_brand
+      ,item.i_brand_id
+ order by dt.d_year
+         ,sum_agg desc
+         ,brand_id
+ LIMIT 100;
+
+
+
+date_dim.alias("dt").crossJoin(store_sales).crossJoin(item)\
+.filter((col("dt.d_date_sk") == col("store_sales.ss_sold_date_sk")) & (col("store_sales.ss_item_sk") == col("item.i_item_sk")) & (col("item.i_manufact_id") == 436) & (col("dt.d_moy") == 12))\
+.groupBy("dt.d_year", "item.i_brand", "item.i_brand_id")\
+.agg(sum(col("ss_ext_sales_price")).alias('sum_agg'))\
+.select("dt.d_year",col("item.i_brand_id").alias("brand_id"),col("item.i_brand").alias("brand"),"sum_agg")\
+.orderBy(col("dt.d_year").asc(),col("sum_agg").desc(),col("brand_id").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_4.sql
+with year_total as (
+ select c_customer_id customer_id
+       ,c_first_name customer_first_name
+       ,c_last_name customer_last_name
+       ,c_preferred_cust_flag customer_preferred_cust_flag
+       ,c_birth_country customer_birth_country
+       ,c_login customer_login
+       ,c_email_address customer_email_address
+       ,d_year dyear
+       ,sum(((ss_ext_list_price-ss_ext_wholesale_cost-ss_ext_discount_amt)+ss_ext_sales_price)/2) year_total
+       ,'s' sale_type
+ from customer
+     ,store_sales
+     ,date_dim
+ where c_customer_sk = ss_customer_sk
+   and ss_sold_date_sk = d_date_sk
+ group by c_customer_id
+         ,c_first_name
+         ,c_last_name
+         ,c_preferred_cust_flag
+         ,c_birth_country
+         ,c_login
+         ,c_email_address
+         ,d_year
+ union all
+ select c_customer_id customer_id
+       ,c_first_name customer_first_name
+       ,c_last_name customer_last_name
+       ,c_preferred_cust_flag customer_preferred_cust_flag
+       ,c_birth_country customer_birth_country
+       ,c_login customer_login
+       ,c_email_address customer_email_address
+       ,d_year dyear
+       ,sum((((cs_ext_list_price-cs_ext_wholesale_cost-cs_ext_discount_amt)+cs_ext_sales_price)/2) ) year_total
+       ,'c' sale_type
+ from customer
+     ,catalog_sales
+     ,date_dim
+ where c_customer_sk = cs_bill_customer_sk
+   and cs_sold_date_sk = d_date_sk
+ group by c_customer_id
+         ,c_first_name
+         ,c_last_name
+         ,c_preferred_cust_flag
+         ,c_birth_country
+         ,c_login
+         ,c_email_address
+         ,d_year
+union all
+ select c_customer_id customer_id
+       ,c_first_name customer_first_name
+       ,c_last_name customer_last_name
+       ,c_preferred_cust_flag customer_preferred_cust_flag
+       ,c_birth_country customer_birth_country
+       ,c_login customer_login
+       ,c_email_address customer_email_address
+       ,d_year dyear
+       ,sum((((ws_ext_list_price-ws_ext_wholesale_cost-ws_ext_discount_amt)+ws_ext_sales_price)/2) ) year_total
+       ,'w' sale_type
+ from customer
+     ,web_sales
+     ,date_dim
+ where c_customer_sk = ws_bill_customer_sk
+   and ws_sold_date_sk = d_date_sk
+ group by c_customer_id
+         ,c_first_name
+         ,c_last_name
+         ,c_preferred_cust_flag
+         ,c_birth_country
+         ,c_login
+         ,c_email_address
+         ,d_year
+         )
+  select  
+                  t_s_secyear.customer_id
+                 ,t_s_secyear.customer_first_name
+                 ,t_s_secyear.customer_last_name
+                 ,t_s_secyear.customer_email_address
+ from year_total t_s_firstyear
+     ,year_total t_s_secyear
+     ,year_total t_c_firstyear
+     ,year_total t_c_secyear
+     ,year_total t_w_firstyear
+     ,year_total t_w_secyear
+ where t_s_secyear.customer_id = t_s_firstyear.customer_id
+   and t_s_firstyear.customer_id = t_c_secyear.customer_id
+   and t_s_firstyear.customer_id = t_c_firstyear.customer_id
+   and t_s_firstyear.customer_id = t_w_firstyear.customer_id
+   and t_s_firstyear.customer_id = t_w_secyear.customer_id
+   and t_s_firstyear.sale_type = 's'
+   and t_c_firstyear.sale_type = 'c'
+   and t_w_firstyear.sale_type = 'w'
+   and t_s_secyear.sale_type = 's'
+   and t_c_secyear.sale_type = 'c'
+   and t_w_secyear.sale_type = 'w'
+   and t_s_firstyear.dyear =  2001
+   and t_s_secyear.dyear = 2001+1
+   and t_c_firstyear.dyear =  2001
+   and t_c_secyear.dyear =  2001+1
+   and t_w_firstyear.dyear = 2001
+   and t_w_secyear.dyear = 2001+1
+   and t_s_firstyear.year_total > 0
+   and t_c_firstyear.year_total > 0
+   and t_w_firstyear.year_total > 0
+   and case when t_c_firstyear.year_total > 0 then t_c_secyear.year_total / t_c_firstyear.year_total else null end
+           > case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else null end
+   and case when t_c_firstyear.year_total > 0 then t_c_secyear.year_total / t_c_firstyear.year_total else null end
+           > case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else null end
+ order by t_s_secyear.customer_id
+         ,t_s_secyear.customer_first_name
+         ,t_s_secyear.customer_last_name
+         ,t_s_secyear.customer_email_address
+LIMIT 100;
+
+
+
+year_total = (customer.crossJoin(store_sales).crossJoin(date_dim)\
+.filter((col("c_customer_sk") == col("ss_customer_sk")) & (col("ss_sold_date_sk") == col("d_date_sk")))\
+.groupBy("c_customer_id", "c_first_name", "c_last_name", "c_preferred_cust_flag", "c_birth_country", "c_login", "c_email_address", "d_year")\
+.agg(sum(((((col("ss_ext_list_price") - col("ss_ext_wholesale_cost")) - col("ss_ext_discount_amt")) + col("ss_ext_sales_price")) / 2)).alias('year_total'))\
+.select(col("c_customer_id").alias("customer_id"),col("c_first_name").alias("customer_first_name"),col("c_last_name").alias("customer_last_name"),col("c_preferred_cust_flag").alias("customer_preferred_cust_flag"),col("c_birth_country").alias("customer_birth_country"),col("c_login").alias("customer_login"),col("c_email_address").alias("customer_email_address"),col("d_year").alias("dyear"),"year_total",lit('s').alias("sale_type"))).union((customer.crossJoin(catalog_sales).crossJoin(date_dim)\
+.filter((col("c_customer_sk") == col("cs_bill_customer_sk")) & (col("cs_sold_date_sk") == col("d_date_sk")))\
+.groupBy("c_customer_id", "c_first_name", "c_last_name", "c_preferred_cust_flag", "c_birth_country", "c_login", "c_email_address", "d_year")\
+.agg(sum(((((col("cs_ext_list_price") - col("cs_ext_wholesale_cost")) - col("cs_ext_discount_amt")) + col("cs_ext_sales_price")) / 2)).alias('year_total'))\
+.select(col("c_customer_id").alias("customer_id"),col("c_first_name").alias("customer_first_name"),col("c_last_name").alias("customer_last_name"),col("c_preferred_cust_flag").alias("customer_preferred_cust_flag"),col("c_birth_country").alias("customer_birth_country"),col("c_login").alias("customer_login"),col("c_email_address").alias("customer_email_address"),col("d_year").alias("dyear"),"year_total",lit('c').alias("sale_type")))).union((customer.crossJoin(web_sales).crossJoin(date_dim)\
+.filter((col("c_customer_sk") == col("ws_bill_customer_sk")) & (col("ws_sold_date_sk") == col("d_date_sk")))\
+.groupBy("c_customer_id", "c_first_name", "c_last_name", "c_preferred_cust_flag", "c_birth_country", "c_login", "c_email_address", "d_year")\
+.agg(sum(((((col("ws_ext_list_price") - col("ws_ext_wholesale_cost")) - col("ws_ext_discount_amt")) + col("ws_ext_sales_price")) / 2)).alias('year_total'))\
+.select(col("c_customer_id").alias("customer_id"),col("c_first_name").alias("customer_first_name"),col("c_last_name").alias("customer_last_name"),col("c_preferred_cust_flag").alias("customer_preferred_cust_flag"),col("c_birth_country").alias("customer_birth_country"),col("c_login").alias("customer_login"),col("c_email_address").alias("customer_email_address"),col("d_year").alias("dyear"),"year_total",lit('w').alias("sale_type"))))
+year_total.alias("t_s_firstyear").crossJoin(year_total.alias("t_s_secyear")).crossJoin(year_total.alias("t_c_firstyear")).crossJoin(year_total.alias("t_c_secyear")).crossJoin(year_total.alias("t_w_firstyear")).crossJoin(year_total.alias("t_w_secyear"))\
+.filter((col("t_s_secyear.customer_id") == col("t_s_firstyear.customer_id")) & (col("t_s_firstyear.customer_id") == col("t_c_secyear.customer_id")) & (col("t_s_firstyear.customer_id") == col("t_c_firstyear.customer_id")) & (col("t_s_firstyear.customer_id") == col("t_w_firstyear.customer_id")) & (col("t_s_firstyear.customer_id") == col("t_w_secyear.customer_id")) & (col("t_s_firstyear.sale_type") == lit('s')) & (col("t_c_firstyear.sale_type") == lit('c')) & (col("t_w_firstyear.sale_type") == lit('w')) & (col("t_s_secyear.sale_type") == lit('s')) & (col("t_c_secyear.sale_type") == lit('c')) & (col("t_w_secyear.sale_type") == lit('w')) & (col("t_s_firstyear.dyear") == 2001) & (col("t_s_secyear.dyear") == (2001 + 1)) & (col("t_c_firstyear.dyear") == 2001) & (col("t_c_secyear.dyear") == (2001 + 1)) & (col("t_w_firstyear.dyear") == 2001) & (col("t_w_secyear.dyear") == (2001 + 1)) & (col("t_s_firstyear.year_total") > 0) & (col("t_c_firstyear.year_total") > 0) & (col("t_w_firstyear.year_total") > 0) & (when(col("t_c_firstyear.year_total") > 0, (col("t_c_secyear.year_total") / col("t_c_firstyear.year_total"))).otherwise(lit(None)) > when(col("t_s_firstyear.year_total") > 0, (col("t_s_secyear.year_total") / col("t_s_firstyear.year_total"))).otherwise(lit(None))) & (when(col("t_c_firstyear.year_total") > 0, (col("t_c_secyear.year_total") / col("t_c_firstyear.year_total"))).otherwise(lit(None)) > when(col("t_w_firstyear.year_total") > 0, (col("t_w_secyear.year_total") / col("t_w_firstyear.year_total"))).otherwise(lit(None))))\
+.select("t_s_secyear.customer_id","t_s_secyear.customer_first_name","t_s_secyear.customer_last_name","t_s_secyear.customer_email_address")\
+.orderBy(col("t_s_secyear.customer_id").asc(),col("t_s_secyear.customer_first_name").asc(),col("t_s_secyear.customer_last_name").asc(),col("t_s_secyear.customer_email_address").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_6.sql
+select  a.ca_state state, count(*) cnt
+ from customer_address a
+     ,customer c
+     ,store_sales s
+     ,date_dim d
+     ,item i
+ where       a.ca_address_sk = c.c_current_addr_sk
+ 	and c.c_customer_sk = s.ss_customer_sk
+ 	and s.ss_sold_date_sk = d.d_date_sk
+ 	and s.ss_item_sk = i.i_item_sk
+ 	and d.d_month_seq = 
+ 	     (select distinct (d_month_seq)
+ 	      from date_dim
+               where d_year = 2000
+ 	        and d_moy = 2 )
+ 	and i.i_current_price > 1.2 * 
+             (select avg(j.i_current_price) 
+ 	     from item j 
+ 	     where j.i_category = i.i_category)
+ group by a.ca_state
+ having count(*) >= 10
+ order by cnt, a.ca_state 
+ LIMIT 100;
+
+
+
+customer_address.alias("a").crossJoin(customer.alias("c")).crossJoin(store_sales.alias("s")).crossJoin(date_dim.alias("d")).crossJoin(item.alias("i"))\
+.crossJoin((date_dim).filter((col("d_year") == 2000) & (col("d_moy") == 2)).alias("subq").agg(first(col("d_month_seq")).alias("subq_0_352")).alias("subq_0_352_agg"))\
+.join((item.alias("j")).alias("j").groupBy("j.i_category").agg(avg(col("j.i_current_price")).alias("subq_1_504")).alias("subq_1_504_agg"), col("i.i_category") == col("subq_1_504_agg.j.i_category"), "left")\
+.filter((col("a.ca_address_sk") == col("c.c_current_addr_sk")) & (col("c.c_customer_sk") == col("s.ss_customer_sk")) & (col("s.ss_sold_date_sk") == col("d.d_date_sk")) & (col("s.ss_item_sk") == col("i.i_item_sk")) & (col("d.d_month_seq") == col("subq_0_352_agg.subq_0_352")) & (col("i.i_current_price") > (1.2 * col("subq_1_504_agg.subq_1_504"))))\
+.groupBy("a.ca_state")\
+.agg(count(lit(1)).alias('cnt'))\
+.filter(col("cnt") >= 10)\
+.select(col("a.ca_state").alias("state"),"cnt")\
+.orderBy(col("cnt").asc(),col("a.ca_state").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_7.sql
+select  i_item_id, 
+        avg(ss_quantity) agg1,
+        avg(ss_list_price) agg2,
+        avg(ss_coupon_amt) agg3,
+        avg(ss_sales_price) agg4 
+ from store_sales, customer_demographics, date_dim, item, promotion
+ where ss_sold_date_sk = d_date_sk and
+       ss_item_sk = i_item_sk and
+       ss_cdemo_sk = cd_demo_sk and
+       ss_promo_sk = p_promo_sk and
+       cd_gender = 'F' and 
+       cd_marital_status = 'W' and
+       cd_education_status = 'Primary' and
+       (p_channel_email = 'N' or p_channel_event = 'N') and
+       d_year = 1998 
+ group by i_item_id
+ order by i_item_id
+ LIMIT 100;
+
+
+
+store_sales.crossJoin(customer_demographics).crossJoin(date_dim).crossJoin(item).crossJoin(promotion)\
+.filter((col("ss_sold_date_sk") == col("d_date_sk")) & (col("ss_item_sk") == col("i_item_sk")) & (col("ss_cdemo_sk") == col("cd_demo_sk")) & (col("ss_promo_sk") == col("p_promo_sk")) & (col("cd_gender") == lit('F')) & (col("cd_marital_status") == lit('W')) & (col("cd_education_status") == lit('Primary')) & ((col("p_channel_email") == lit('N')) | (col("p_channel_event") == lit('N'))) & (col("d_year") == 1998))\
+.groupBy("i_item_id")\
+.agg(avg(col("ss_quantity")).alias('agg1'),avg(col("ss_list_price")).alias('agg2'),avg(col("ss_coupon_amt")).alias('agg3'),avg(col("ss_sales_price")).alias('agg4'))\
+.select("i_item_id","agg1","agg2","agg3","agg4")\
+.orderBy(col("i_item_id").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_8.sql
+select  s_store_name
+      ,sum(ss_net_profit)
+ from store_sales
+     ,date_dim
+     ,store,
+     (select ca_zip
+     from (
+      SELECT substr(ca_zip,1,5) ca_zip
+      FROM customer_address
+      WHERE substr(ca_zip,1,5) IN (
+                          '89436','30868','65085','22977','83927','77557',
+                          '58429','40697','80614','10502','32779',
+                          '91137','61265','98294','17921','18427',
+                          '21203','59362','87291','84093','21505',
+                          '17184','10866','67898','25797','28055',
+                          '18377','80332','74535','21757','29742',
+                          '90885','29898','17819','40811','25990',
+                          '47513','89531','91068','10391','18846',
+                          '99223','82637','41368','83658','86199',
+                          '81625','26696','89338','88425','32200',
+                          '81427','19053','77471','36610','99823',
+                          '43276','41249','48584','83550','82276',
+                          '18842','78890','14090','38123','40936',
+                          '34425','19850','43286','80072','79188',
+                          '54191','11395','50497','84861','90733',
+                          '21068','57666','37119','25004','57835',
+                          '70067','62878','95806','19303','18840',
+                          '19124','29785','16737','16022','49613',
+                          '89977','68310','60069','98360','48649',
+                          '39050','41793','25002','27413','39736',
+                          '47208','16515','94808','57648','15009',
+                          '80015','42961','63982','21744','71853',
+                          '81087','67468','34175','64008','20261',
+                          '11201','51799','48043','45645','61163',
+                          '48375','36447','57042','21218','41100',
+                          '89951','22745','35851','83326','61125',
+                          '78298','80752','49858','52940','96976',
+                          '63792','11376','53582','18717','90226',
+                          '50530','94203','99447','27670','96577',
+                          '57856','56372','16165','23427','54561',
+                          '28806','44439','22926','30123','61451',
+                          '92397','56979','92309','70873','13355',
+                          '21801','46346','37562','56458','28286',
+                          '47306','99555','69399','26234','47546',
+                          '49661','88601','35943','39936','25632',
+                          '24611','44166','56648','30379','59785',
+                          '11110','14329','93815','52226','71381',
+                          '13842','25612','63294','14664','21077',
+                          '82626','18799','60915','81020','56447',
+                          '76619','11433','13414','42548','92713',
+                          '70467','30884','47484','16072','38936',
+                          '13036','88376','45539','35901','19506',
+                          '65690','73957','71850','49231','14276',
+                          '20005','18384','76615','11635','38177',
+                          '55607','41369','95447','58581','58149',
+                          '91946','33790','76232','75692','95464',
+                          '22246','51061','56692','53121','77209',
+                          '15482','10688','14868','45907','73520',
+                          '72666','25734','17959','24677','66446',
+                          '94627','53535','15560','41967','69297',
+                          '11929','59403','33283','52232','57350',
+                          '43933','40921','36635','10827','71286',
+                          '19736','80619','25251','95042','15526',
+                          '36496','55854','49124','81980','35375',
+                          '49157','63512','28944','14946','36503',
+                          '54010','18767','23969','43905','66979',
+                          '33113','21286','58471','59080','13395',
+                          '79144','70373','67031','38360','26705',
+                          '50906','52406','26066','73146','15884',
+                          '31897','30045','61068','45550','92454',
+                          '13376','14354','19770','22928','97790',
+                          '50723','46081','30202','14410','20223',
+                          '88500','67298','13261','14172','81410',
+                          '93578','83583','46047','94167','82564',
+                          '21156','15799','86709','37931','74703',
+                          '83103','23054','70470','72008','49247',
+                          '91911','69998','20961','70070','63197',
+                          '54853','88191','91830','49521','19454',
+                          '81450','89091','62378','25683','61869',
+                          '51744','36580','85778','36871','48121',
+                          '28810','83712','45486','67393','26935',
+                          '42393','20132','55349','86057','21309',
+                          '80218','10094','11357','48819','39734',
+                          '40758','30432','21204','29467','30214',
+                          '61024','55307','74621','11622','68908',
+                          '33032','52868','99194','99900','84936',
+                          '69036','99149','45013','32895','59004',
+                          '32322','14933','32936','33562','72550',
+                          '27385','58049','58200','16808','21360',
+                          '32961','18586','79307','15492')
+     intersect
+      select ca_zip
+      from (SELECT substr(ca_zip,1,5) ca_zip,count(*) cnt
+            FROM customer_address, customer
+            WHERE ca_address_sk = c_current_addr_sk and
+                  c_preferred_cust_flag='Y'
+            group by ca_zip
+            having count(*) > 10)A1)A2) V1
+ where ss_store_sk = s_store_sk
+  and ss_sold_date_sk = d_date_sk
+  and d_qoy = 1 and d_year = 2002
+  and (substr(s_zip,1,2) = substr(V1.ca_zip,1,2))
+ group by s_store_name
+ order by s_store_name
+ LIMIT 100;
+
+
+
+store_sales.crossJoin(date_dim).crossJoin(store).crossJoin((((customer_address\
+.filter(substring(col("ca_zip"), 1, 5).isin(['89436', '30868', '65085', '22977', '83927', '77557', '58429', '40697', '80614', '10502', '32779', '91137', '61265', '98294', '17921', '18427', '21203', '59362', '87291', '84093', '21505', '17184', '10866', '67898', '25797', '28055', '18377', '80332', '74535', '21757', '29742', '90885', '29898', '17819', '40811', '25990', '47513', '89531', '91068', '10391', '18846', '99223', '82637', '41368', '83658', '86199', '81625', '26696', '89338', '88425', '32200', '81427', '19053', '77471', '36610', '99823', '43276', '41249', '48584', '83550', '82276', '18842', '78890', '14090', '38123', '40936', '34425', '19850', '43286', '80072', '79188', '54191', '11395', '50497', '84861', '90733', '21068', '57666', '37119', '25004', '57835', '70067', '62878', '95806', '19303', '18840', '19124', '29785', '16737', '16022', '49613', '89977', '68310', '60069', '98360', '48649', '39050', '41793', '25002', '27413', '39736', '47208', '16515', '94808', '57648', '15009', '80015', '42961', '63982', '21744', '71853', '81087', '67468', '34175', '64008', '20261', '11201', '51799', '48043', '45645', '61163', '48375', '36447', '57042', '21218', '41100', '89951', '22745', '35851', '83326', '61125', '78298', '80752', '49858', '52940', '96976', '63792', '11376', '53582', '18717', '90226', '50530', '94203', '99447', '27670', '96577', '57856', '56372', '16165', '23427', '54561', '28806', '44439', '22926', '30123', '61451', '92397', '56979', '92309', '70873', '13355', '21801', '46346', '37562', '56458', '28286', '47306', '99555', '69399', '26234', '47546', '49661', '88601', '35943', '39936', '25632', '24611', '44166', '56648', '30379', '59785', '11110', '14329', '93815', '52226', '71381', '13842', '25612', '63294', '14664', '21077', '82626', '18799', '60915', '81020', '56447', '76619', '11433', '13414', '42548', '92713', '70467', '30884', '47484', '16072', '38936', '13036', '88376', '45539', '35901', '19506', '65690', '73957', '71850', '49231', '14276', '20005', '18384', '76615', '11635', '38177', '55607', '41369', '95447', '58581', '58149', '91946', '33790', '76232', '75692', '95464', '22246', '51061', '56692', '53121', '77209', '15482', '10688', '14868', '45907', '73520', '72666', '25734', '17959', '24677', '66446', '94627', '53535', '15560', '41967', '69297', '11929', '59403', '33283', '52232', '57350', '43933', '40921', '36635', '10827', '71286', '19736', '80619', '25251', '95042', '15526', '36496', '55854', '49124', '81980', '35375', '49157', '63512', '28944', '14946', '36503', '54010', '18767', '23969', '43905', '66979', '33113', '21286', '58471', '59080', '13395', '79144', '70373', '67031', '38360', '26705', '50906', '52406', '26066', '73146', '15884', '31897', '30045', '61068', '45550', '92454', '13376', '14354', '19770', '22928', '97790', '50723', '46081', '30202', '14410', '20223', '88500', '67298', '13261', '14172', '81410', '93578', '83583', '46047', '94167', '82564', '21156', '15799', '86709', '37931', '74703', '83103', '23054', '70470', '72008', '49247', '91911', '69998', '20961', '70070', '63197', '54853', '88191', '91830', '49521', '19454', '81450', '89091', '62378', '25683', '61869', '51744', '36580', '85778', '36871', '48121', '28810', '83712', '45486', '67393', '26935', '42393', '20132', '55349', '86057', '21309', '80218', '10094', '11357', '48819', '39734', '40758', '30432', '21204', '29467', '30214', '61024', '55307', '74621', '11622', '68908', '33032', '52868', '99194', '99900', '84936', '69036', '99149', '45013', '32895', '59004', '32322', '14933', '32936', '33562', '72550', '27385', '58049', '58200', '16808', '21360', '32961', '18586', '79307', '15492']))\
+.select(substring(col("ca_zip"), 1, 5).alias("ca_zip"))).intersect(((customer_address.crossJoin(customer)\
+.filter((col("ca_address_sk") == col("c_current_addr_sk")) & (col("c_preferred_cust_flag") == lit('Y')))\
+.groupBy("ca_zip")\
+.agg(count(lit(1)).alias('cnt'))\
+.filter(col("cnt") > 10)\
+.select(substring(col("ca_zip"), 1, 5).alias("ca_zip"),"cnt")).alias("A1")\
+.select("ca_zip")))).alias("A2")\
+.select("ca_zip")).alias("V1"))\
+.filter((col("ss_store_sk") == col("s_store_sk")) & (col("ss_sold_date_sk") == col("d_date_sk")) & (col("d_qoy") == 1) & (col("d_year") == 2002) & (substring(col("s_zip"), 1, 2) == substring(col("V1.ca_zip"), 1, 2)))\
+.groupBy("s_store_name")\
+.agg(sum(col("ss_net_profit")).alias('sum_ss_net_profit'))\
+.select("s_store_name","sum_ss_net_profit")\
+.orderBy(col("s_store_name").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_9.sql
+select case when (select count(*) 
+                  from store_sales 
+                  where ss_quantity between 1 and 20) > 25437
+            then (select avg(ss_ext_discount_amt) 
+                  from store_sales 
+                  where ss_quantity between 1 and 20) 
+            else (select avg(ss_net_profit)
+                  from store_sales
+                  where ss_quantity between 1 and 20) end bucket1 ,
+       case when (select count(*)
+                  from store_sales
+                  where ss_quantity between 21 and 40) > 22746
+            then (select avg(ss_ext_discount_amt)
+                  from store_sales
+                  where ss_quantity between 21 and 40) 
+            else (select avg(ss_net_profit)
+                  from store_sales
+                  where ss_quantity between 21 and 40) end bucket2,
+       case when (select count(*)
+                  from store_sales
+                  where ss_quantity between 41 and 60) > 9387
+            then (select avg(ss_ext_discount_amt)
+                  from store_sales
+                  where ss_quantity between 41 and 60)
+            else (select avg(ss_net_profit)
+                  from store_sales
+                  where ss_quantity between 41 and 60) end bucket3,
+       case when (select count(*)
+                  from store_sales
+                  where ss_quantity between 61 and 80) > 10098
+            then (select avg(ss_ext_discount_amt)
+                  from store_sales
+                  where ss_quantity between 61 and 80)
+            else (select avg(ss_net_profit)
+                  from store_sales
+                  where ss_quantity between 61 and 80) end bucket4,
+       case when (select count(*)
+                  from store_sales
+                  where ss_quantity between 81 and 100) > 18213
+            then (select avg(ss_ext_discount_amt)
+                  from store_sales
+                  where ss_quantity between 81 and 100)
+            else (select avg(ss_net_profit)
+                  from store_sales
+                  where ss_quantity between 81 and 100) end bucket5
+from reason
+where r_reason_sk = 1
+;
+
+
+
+reason\
+.crossJoin((store_sales).filter((col("ss_quantity").between(1, 20))).alias("subq").agg(avg(col("ss_ext_discount_amt")).alias("subq_0_368")).alias("subq_0_368_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(1, 20))).alias("subq").agg(count(lit(1)).alias("subq_1_256")).alias("subq_1_256_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(1, 20))).alias("subq").agg(avg(col("ss_net_profit")).alias("subq_2_448")).alias("subq_2_448_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(21, 40))).alias("subq").agg(avg(col("ss_ext_discount_amt")).alias("subq_3_456")).alias("subq_3_456_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(21, 40))).alias("subq").agg(count(lit(1)).alias("subq_4_696")).alias("subq_4_696_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(21, 40))).alias("subq").agg(avg(col("ss_net_profit")).alias("subq_5_480")).alias("subq_5_480_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(41, 60))).alias("subq").agg(avg(col("ss_ext_discount_amt")).alias("subq_6_120")).alias("subq_6_120_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(41, 60))).alias("subq").agg(count(lit(1)).alias("subq_7_656")).alias("subq_7_656_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(41, 60))).alias("subq").agg(avg(col("ss_net_profit")).alias("subq_8_168")).alias("subq_8_168_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(61, 80))).alias("subq").agg(avg(col("ss_ext_discount_amt")).alias("subq_9_808")).alias("subq_9_808_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(61, 80))).alias("subq").agg(count(lit(1)).alias("subq_10_320")).alias("subq_10_320_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(61, 80))).alias("subq").agg(avg(col("ss_net_profit")).alias("subq_11_704")).alias("subq_11_704_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(81, 100))).alias("subq").agg(avg(col("ss_ext_discount_amt")).alias("subq_12_192")).alias("subq_12_192_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(81, 100))).alias("subq").agg(count(lit(1)).alias("subq_13_856")).alias("subq_13_856_agg"))\
+.crossJoin((store_sales).filter((col("ss_quantity").between(81, 100))).alias("subq").agg(avg(col("ss_net_profit")).alias("subq_14_536")).alias("subq_14_536_agg"))\
+.filter(col("r_reason_sk") == 1)\
+.select(when(col("subq_1_256_agg.subq_1_256") > 25437, col("subq_0_368_agg.subq_0_368")).otherwise(col("subq_2_448_agg.subq_2_448")).alias("bucket1"),when(col("subq_4_696_agg.subq_4_696") > 22746, col("subq_3_456_agg.subq_3_456")).otherwise(col("subq_5_480_agg.subq_5_480")).alias("bucket2"),when(col("subq_7_656_agg.subq_7_656") > 9387, col("subq_6_120_agg.subq_6_120")).otherwise(col("subq_8_168_agg.subq_8_168")).alias("bucket3"),when(col("subq_10_320_agg.subq_10_320") > 10098, col("subq_9_808_agg.subq_9_808")).otherwise(col("subq_11_704_agg.subq_11_704")).alias("bucket4"),when(col("subq_13_856_agg.subq_13_856") > 18213, col("subq_12_192_agg.subq_12_192")).otherwise(col("subq_14_536_agg.subq_14_536")).alias("bucket5"))
+----------------------------------------------------------------------------------------------------
+Processing file: query_10.sql
+select  
+  cd_gender,
+  cd_marital_status,
+  cd_education_status,
+  count(*) cnt1,
+  cd_purchase_estimate,
+  count(*) cnt2,
+  cd_credit_rating,
+  count(*) cnt3,
+  cd_dep_count,
+  count(*) cnt4,
+  cd_dep_employed_count,
+  count(*) cnt5,
+  cd_dep_college_count,
+  count(*) cnt6
+ from
+  customer c,customer_address ca,customer_demographics
+ where
+  c.c_current_addr_sk = ca.ca_address_sk and
+  ca_county in ('Walker County','Richland County','Gaines County','Douglas County','Dona Ana County') and
+  cd_demo_sk = c.c_current_cdemo_sk and 
+  exists (select *
+          from store_sales,date_dim
+          where c.c_customer_sk = ss_customer_sk and
+                ss_sold_date_sk = d_date_sk and
+                d_year = 2002 and
+                d_moy between 4 and 4+3) and
+   (exists (select *
+            from web_sales,date_dim
+            where c.c_customer_sk = ws_bill_customer_sk and
+                  ws_sold_date_sk = d_date_sk and
+                  d_year = 2002 and
+                  d_moy between 4 ANd 4+3) or 
+    exists (select * 
+            from catalog_sales,date_dim
+            where c.c_customer_sk = cs_ship_customer_sk and
+                  cs_sold_date_sk = d_date_sk and
+                  d_year = 2002 and
+                  d_moy between 4 and 4+3))
+ group by cd_gender,
+          cd_marital_status,
+          cd_education_status,
+          cd_purchase_estimate,
+          cd_credit_rating,
+          cd_dep_count,
+          cd_dep_employed_count,
+          cd_dep_college_count
+ order by cd_gender,
+          cd_marital_status,
+          cd_education_status,
+          cd_purchase_estimate,
+          cd_credit_rating,
+          cd_dep_count,
+          cd_dep_employed_count,
+          cd_dep_college_count
+LIMIT 100;
+
+
+
+customer.alias("c").crossJoin(customer_address.alias("ca")).crossJoin(customer_demographics)\
+.join((store_sales.crossJoin(date_dim)).filter((col("ss_sold_date_sk") == col("d_date_sk")) & (col("d_year") == 2002) & (col("d_moy").between(4, (4 + 3)))).alias("subq").groupBy("ss_customer_sk").agg(first(lit(1)).alias("exists_0_600")).alias("exists_0_600_agg"), col("c.c_customer_sk") == col("exists_0_600_agg.ss_customer_sk"), "left")\
+.join((web_sales.crossJoin(date_dim)).filter((col("ws_sold_date_sk") == col("d_date_sk")) & (col("d_year") == 2002) & (col("d_moy").between(4, (4 + 3)))).alias("subq").groupBy("ws_bill_customer_sk").agg(first(lit(1)).alias("exists_1_960")).alias("exists_1_960_agg"), col("c.c_customer_sk") == col("exists_1_960_agg.ws_bill_customer_sk"), "left")\
+.join((catalog_sales.crossJoin(date_dim)).filter((col("cs_sold_date_sk") == col("d_date_sk")) & (col("d_year") == 2002) & (col("d_moy").between(4, (4 + 3)))).alias("subq").groupBy("cs_ship_customer_sk").agg(first(lit(1)).alias("exists_2_432")).alias("exists_2_432_agg"), col("c.c_customer_sk") == col("exists_2_432_agg.cs_ship_customer_sk"), "left")\
+.filter((col("c.c_current_addr_sk") == col("ca.ca_address_sk")) & (col("ca_county").isin(['Walker County', 'Richland County', 'Gaines County', 'Douglas County', 'Dona Ana County'])) & (col("cd_demo_sk") == col("c.c_current_cdemo_sk")) & (col('exists_0_600_agg.exists_0_600').isNotNull()) & ((col('exists_1_960_agg.exists_1_960').isNotNull()) | (col('exists_2_432_agg.exists_2_432').isNotNull())))\
+.groupBy("cd_gender", "cd_marital_status", "cd_education_status", "cd_purchase_estimate", "cd_credit_rating", "cd_dep_count", "cd_dep_employed_count", "cd_dep_college_count")\
+.agg(count(lit(1)).alias('cnt1'))\
+.select("cd_gender","cd_marital_status","cd_education_status","cnt1","cd_purchase_estimate","cnt2","cd_credit_rating","cnt3","cd_dep_count","cnt4","cd_dep_employed_count","cnt5","cd_dep_college_count","cnt6")\
+.orderBy(col("cd_gender").asc(),col("cd_marital_status").asc(),col("cd_education_status").asc(),col("cd_purchase_estimate").asc(),col("cd_credit_rating").asc(),col("cd_dep_count").asc(),col("cd_dep_employed_count").asc(),col("cd_dep_college_count").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_11.sql
+with year_total as (
+ select c_customer_id customer_id
+       ,c_first_name customer_first_name
+       ,c_last_name customer_last_name
+       ,c_preferred_cust_flag customer_preferred_cust_flag
+       ,c_birth_country customer_birth_country
+       ,c_login customer_login
+       ,c_email_address customer_email_address
+       ,d_year dyear
+       ,sum(ss_ext_list_price-ss_ext_discount_amt) year_total
+       ,'s' sale_type
+ from customer
+     ,store_sales
+     ,date_dim
+ where c_customer_sk = ss_customer_sk
+   and ss_sold_date_sk = d_date_sk
+ group by c_customer_id
+         ,c_first_name
+         ,c_last_name
+         ,c_preferred_cust_flag 
+         ,c_birth_country
+         ,c_login
+         ,c_email_address
+         ,d_year 
+ union all
+ select c_customer_id customer_id
+       ,c_first_name customer_first_name
+       ,c_last_name customer_last_name
+       ,c_preferred_cust_flag customer_preferred_cust_flag
+       ,c_birth_country customer_birth_country
+       ,c_login customer_login
+       ,c_email_address customer_email_address
+       ,d_year dyear
+       ,sum(ws_ext_list_price-ws_ext_discount_amt) year_total
+       ,'w' sale_type
+ from customer
+     ,web_sales
+     ,date_dim
+ where c_customer_sk = ws_bill_customer_sk
+   and ws_sold_date_sk = d_date_sk
+ group by c_customer_id
+         ,c_first_name
+         ,c_last_name
+         ,c_preferred_cust_flag 
+         ,c_birth_country
+         ,c_login
+         ,c_email_address
+         ,d_year
+         )
+  select  
+                  t_s_secyear.customer_id
+                 ,t_s_secyear.customer_first_name
+                 ,t_s_secyear.customer_last_name
+                 ,t_s_secyear.customer_email_address
+ from year_total t_s_firstyear
+     ,year_total t_s_secyear
+     ,year_total t_w_firstyear
+     ,year_total t_w_secyear
+ where t_s_secyear.customer_id = t_s_firstyear.customer_id
+         and t_s_firstyear.customer_id = t_w_secyear.customer_id
+         and t_s_firstyear.customer_id = t_w_firstyear.customer_id
+         and t_s_firstyear.sale_type = 's'
+         and t_w_firstyear.sale_type = 'w'
+         and t_s_secyear.sale_type = 's'
+         and t_w_secyear.sale_type = 'w'
+         and t_s_firstyear.dyear = 2001
+         and t_s_secyear.dyear = 2001+1
+         and t_w_firstyear.dyear = 2001
+         and t_w_secyear.dyear = 2001+1
+         and t_s_firstyear.year_total > 0
+         and t_w_firstyear.year_total > 0
+         and case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else 0.0 end
+             > case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else 0.0 end
+ order by t_s_secyear.customer_id
+         ,t_s_secyear.customer_first_name
+         ,t_s_secyear.customer_last_name
+         ,t_s_secyear.customer_email_address
+LIMIT 100;
+
+
+
+year_total = (customer.crossJoin(store_sales).crossJoin(date_dim)\
+.filter((col("c_customer_sk") == col("ss_customer_sk")) & (col("ss_sold_date_sk") == col("d_date_sk")))\
+.groupBy("c_customer_id", "c_first_name", "c_last_name", "c_preferred_cust_flag", "c_birth_country", "c_login", "c_email_address", "d_year")\
+.agg(sum((col("ss_ext_list_price") - col("ss_ext_discount_amt"))).alias('year_total'))\
+.select(col("c_customer_id").alias("customer_id"),col("c_first_name").alias("customer_first_name"),col("c_last_name").alias("customer_last_name"),col("c_preferred_cust_flag").alias("customer_preferred_cust_flag"),col("c_birth_country").alias("customer_birth_country"),col("c_login").alias("customer_login"),col("c_email_address").alias("customer_email_address"),col("d_year").alias("dyear"),"year_total",lit('s').alias("sale_type"))).union((customer.crossJoin(web_sales).crossJoin(date_dim)\
+.filter((col("c_customer_sk") == col("ws_bill_customer_sk")) & (col("ws_sold_date_sk") == col("d_date_sk")))\
+.groupBy("c_customer_id", "c_first_name", "c_last_name", "c_preferred_cust_flag", "c_birth_country", "c_login", "c_email_address", "d_year")\
+.agg(sum((col("ws_ext_list_price") - col("ws_ext_discount_amt"))).alias('year_total'))\
+.select(col("c_customer_id").alias("customer_id"),col("c_first_name").alias("customer_first_name"),col("c_last_name").alias("customer_last_name"),col("c_preferred_cust_flag").alias("customer_preferred_cust_flag"),col("c_birth_country").alias("customer_birth_country"),col("c_login").alias("customer_login"),col("c_email_address").alias("customer_email_address"),col("d_year").alias("dyear"),"year_total",lit('w').alias("sale_type"))))
+year_total.alias("t_s_firstyear").crossJoin(year_total.alias("t_s_secyear")).crossJoin(year_total.alias("t_w_firstyear")).crossJoin(year_total.alias("t_w_secyear"))\
+.filter((col("t_s_secyear.customer_id") == col("t_s_firstyear.customer_id")) & (col("t_s_firstyear.customer_id") == col("t_w_secyear.customer_id")) & (col("t_s_firstyear.customer_id") == col("t_w_firstyear.customer_id")) & (col("t_s_firstyear.sale_type") == lit('s')) & (col("t_w_firstyear.sale_type") == lit('w')) & (col("t_s_secyear.sale_type") == lit('s')) & (col("t_w_secyear.sale_type") == lit('w')) & (col("t_s_firstyear.dyear") == 2001) & (col("t_s_secyear.dyear") == (2001 + 1)) & (col("t_w_firstyear.dyear") == 2001) & (col("t_w_secyear.dyear") == (2001 + 1)) & (col("t_s_firstyear.year_total") > 0) & (col("t_w_firstyear.year_total") > 0) & (when(col("t_w_firstyear.year_total") > 0, (col("t_w_secyear.year_total") / col("t_w_firstyear.year_total"))).otherwise(0.0) > when(col("t_s_firstyear.year_total") > 0, (col("t_s_secyear.year_total") / col("t_s_firstyear.year_total"))).otherwise(0.0)))\
+.select("t_s_secyear.customer_id","t_s_secyear.customer_first_name","t_s_secyear.customer_last_name","t_s_secyear.customer_email_address")\
+.orderBy(col("t_s_secyear.customer_id").asc(),col("t_s_secyear.customer_first_name").asc(),col("t_s_secyear.customer_last_name").asc(),col("t_s_secyear.customer_email_address").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_13.sql
+select avg(ss_quantity)
+       ,avg(ss_ext_sales_price)
+       ,avg(ss_ext_wholesale_cost)
+       ,sum(ss_ext_wholesale_cost)
+ from store_sales
+     ,store
+     ,customer_demographics
+     ,household_demographics
+     ,customer_address
+     ,date_dim
+ where s_store_sk = ss_store_sk
+ and  ss_sold_date_sk = d_date_sk and d_year = 2001
+ and((ss_hdemo_sk=hd_demo_sk
+  and cd_demo_sk = ss_cdemo_sk
+  and cd_marital_status = 'D'
+  and cd_education_status = '2 yr Degree'
+  and ss_sales_price between 100.00 and 150.00
+  and hd_dep_count = 3   
+     )or
+     (ss_hdemo_sk=hd_demo_sk
+  and cd_demo_sk = ss_cdemo_sk
+  and cd_marital_status = 'S'
+  and cd_education_status = 'Secondary'
+  and ss_sales_price between 50.00 and 100.00   
+  and hd_dep_count = 1
+     ) or 
+     (ss_hdemo_sk=hd_demo_sk
+  and cd_demo_sk = ss_cdemo_sk
+  and cd_marital_status = 'W'
+  and cd_education_status = 'Advanced Degree'
+  and ss_sales_price between 150.00 and 200.00 
+  and hd_dep_count = 1  
+     ))
+ and((ss_addr_sk = ca_address_sk
+  and ca_country = 'United States'
+  and ca_state in ('CO', 'IL', 'MN')
+  and ss_net_profit between 100 and 200  
+     ) or
+     (ss_addr_sk = ca_address_sk
+  and ca_country = 'United States'
+  and ca_state in ('OH', 'MT', 'NM')
+  and ss_net_profit between 150 and 300  
+     ) or
+     (ss_addr_sk = ca_address_sk
+  and ca_country = 'United States'
+  and ca_state in ('TX', 'MO', 'MI')
+  and ss_net_profit between 50 and 250  
+     ))
+;
+
+
+
+store_sales.crossJoin(store).crossJoin(customer_demographics).crossJoin(household_demographics).crossJoin(customer_address).crossJoin(date_dim)\
+.filter((col("s_store_sk") == col("ss_store_sk")) & (col("ss_sold_date_sk") == col("d_date_sk")) & (col("d_year") == 2001) & (((col("ss_hdemo_sk") == col("hd_demo_sk")) & (col("cd_demo_sk") == col("ss_cdemo_sk")) & (col("cd_marital_status") == lit('D')) & (col("cd_education_status") == lit('2 yr Degree')) & (col("ss_sales_price").between(100.0, 150.0)) & (col("hd_dep_count") == 3)) | ((col("ss_hdemo_sk") == col("hd_demo_sk")) & (col("cd_demo_sk") == col("ss_cdemo_sk")) & (col("cd_marital_status") == lit('S')) & (col("cd_education_status") == lit('Secondary')) & (col("ss_sales_price").between(50.0, 100.0)) & (col("hd_dep_count") == 1)) | ((col("ss_hdemo_sk") == col("hd_demo_sk")) & (col("cd_demo_sk") == col("ss_cdemo_sk")) & (col("cd_marital_status") == lit('W')) & (col("cd_education_status") == lit('Advanced Degree')) & (col("ss_sales_price").between(150.0, 200.0)) & (col("hd_dep_count") == 1))) & (((col("ss_addr_sk") == col("ca_address_sk")) & (col("ca_country") == lit('United States')) & (col("ca_state").isin(['CO', 'IL', 'MN'])) & (col("ss_net_profit").between(100, 200))) | ((col("ss_addr_sk") == col("ca_address_sk")) & (col("ca_country") == lit('United States')) & (col("ca_state").isin(['OH', 'MT', 'NM'])) & (col("ss_net_profit").between(150, 300))) | ((col("ss_addr_sk") == col("ca_address_sk")) & (col("ca_country") == lit('United States')) & (col("ca_state").isin(['TX', 'MO', 'MI'])) & (col("ss_net_profit").between(50, 250)))))\
+.agg(avg(col("ss_quantity")).alias('avg_ss_quantity'),avg(col("ss_ext_sales_price")).alias('avg_ss_ext_sales_price'),avg(col("ss_ext_wholesale_cost")).alias('avg_ss_ext_wholesale_cost'),sum(col("ss_ext_wholesale_cost")).alias('sum_ss_ext_wholesale_cost'))\
+.select("avg_ss_quantity","avg_ss_ext_sales_price","avg_ss_ext_wholesale_cost","sum_ss_ext_wholesale_cost")
+----------------------------------------------------------------------------------------------------
+Processing file: query_14.sql
+with  cross_items as
+ (select i_item_sk ss_item_sk
+ from item,
+ (select iss.i_brand_id brand_id
+     ,iss.i_class_id class_id
+     ,iss.i_category_id category_id
+ from store_sales
+     ,item iss
+     ,date_dim d1
+ where ss_item_sk = iss.i_item_sk
+   and ss_sold_date_sk = d1.d_date_sk
+   and d1.d_year between 1998 AND 1998 + 2
+ intersect 
+ select ics.i_brand_id
+     ,ics.i_class_id
+     ,ics.i_category_id
+ from catalog_sales
+     ,item ics
+     ,date_dim d2
+ where cs_item_sk = ics.i_item_sk
+   and cs_sold_date_sk = d2.d_date_sk
+   and d2.d_year between 1998 AND 1998 + 2
+ intersect
+ select iws.i_brand_id
+     ,iws.i_class_id
+     ,iws.i_category_id
+ from web_sales
+     ,item iws
+     ,date_dim d3
+ where ws_item_sk = iws.i_item_sk
+   and ws_sold_date_sk = d3.d_date_sk
+   and d3.d_year between 1998 AND 1998 + 2)
+ where i_brand_id = brand_id
+      and i_class_id = class_id
+      and i_category_id = category_id
+),
+ avg_sales as
+ (select avg(quantity*list_price) average_sales
+  from (select ss_quantity quantity
+             ,ss_list_price list_price
+       from store_sales
+           ,date_dim
+       where ss_sold_date_sk = d_date_sk
+         and d_year between 1998 and 1998 + 2
+       union all 
+       select cs_quantity quantity 
+             ,cs_list_price list_price
+       from catalog_sales
+           ,date_dim
+       where cs_sold_date_sk = d_date_sk
+         and d_year between 1998 and 1998 + 2 
+       union all
+       select ws_quantity quantity
+             ,ws_list_price list_price
+       from web_sales
+           ,date_dim
+       where ws_sold_date_sk = d_date_sk
+         and d_year between 1998 and 1998 + 2) x)
+  select  channel, i_brand_id,i_class_id,i_category_id,sum(sales), sum(number_sales)
+ from(
+       select 'store' channel, i_brand_id,i_class_id
+             ,i_category_id,sum(ss_quantity*ss_list_price) sales
+             , count(*) number_sales
+       from store_sales
+           ,item
+           ,date_dim
+       where ss_item_sk in (select ss_item_sk from cross_items)
+         and ss_item_sk = i_item_sk
+         and ss_sold_date_sk = d_date_sk
+         and d_year = 1998+2 
+         and d_moy = 11
+       group by i_brand_id,i_class_id,i_category_id
+       having sum(ss_quantity*ss_list_price) > (select average_sales from avg_sales)
+       union all
+       select 'catalog' channel, i_brand_id,i_class_id,i_category_id, sum(cs_quantity*cs_list_price) sales, count(*) number_sales
+       from catalog_sales
+           ,item
+           ,date_dim
+       where cs_item_sk in (select ss_item_sk from cross_items)
+         and cs_item_sk = i_item_sk
+         and cs_sold_date_sk = d_date_sk
+         and d_year = 1998+2 
+         and d_moy = 11
+       group by i_brand_id,i_class_id,i_category_id
+       having sum(cs_quantity*cs_list_price) > (select average_sales from avg_sales)
+       union all
+       select 'web' channel, i_brand_id,i_class_id,i_category_id, sum(ws_quantity*ws_list_price) sales , count(*) number_sales
+       from web_sales
+           ,item
+           ,date_dim
+       where ws_item_sk in (select ss_item_sk from cross_items)
+         and ws_item_sk = i_item_sk
+         and ws_sold_date_sk = d_date_sk
+         and d_year = 1998+2
+         and d_moy = 11
+       group by i_brand_id,i_class_id,i_category_id
+       having sum(ws_quantity*ws_list_price) > (select average_sales from avg_sales)
+ ) y
+ group by rollup (channel, i_brand_id,i_class_id,i_category_id)
+ order by channel,i_brand_id,i_class_id,i_category_id
+ LIMIT 100;
+
+cross_items = item.crossJoin((((store_sales.crossJoin(item.alias("iss")).crossJoin(date_dim.alias("d1"))\
+.filter((col("ss_item_sk") == col("iss.i_item_sk")) & (col("ss_sold_date_sk") == col("d1.d_date_sk")) & (col("d1.d_year").between(1998, (1998 + 2))))\
+.select(col("iss.i_brand_id").alias("brand_id"),col("iss.i_class_id").alias("class_id"),col("iss.i_category_id").alias("category_id"))).intersect((catalog_sales.crossJoin(item.alias("ics")).crossJoin(date_dim.alias("d2"))\
+.filter((col("cs_item_sk") == col("ics.i_item_sk")) & (col("cs_sold_date_sk") == col("d2.d_date_sk")) & (col("d2.d_year").between(1998, (1998 + 2))))\
+.select("ics.i_brand_id","ics.i_class_id","ics.i_category_id")))).intersect((web_sales.crossJoin(item.alias("iws")).crossJoin(date_dim.alias("d3"))\
+.filter((col("ws_item_sk") == col("iws.i_item_sk")) & (col("ws_sold_date_sk") == col("d3.d_date_sk")) & (col("d3.d_year").between(1998, (1998 + 2))))\
+.select("iws.i_brand_id","iws.i_class_id","iws.i_category_id")))).alias("subq_920"))\
+.filter((col("i_brand_id") == col("brand_id")) & (col("i_class_id") == col("class_id")) & (col("i_category_id") == col("category_id")))\
+.select(col("i_item_sk").alias("ss_item_sk"))
+avg_sales = ((store_sales.crossJoin(date_dim)\
+.filter((col("ss_sold_date_sk") == col("d_date_sk")) & (col("d_year").between(1998, (1998 + 2))))\
+.select(col("ss_quantity").alias("quantity"),col("ss_list_price").alias("list_price"))).union((catalog_sales.crossJoin(date_dim)\
+.filter((col("cs_sold_date_sk") == col("d_date_sk")) & (col("d_year").between(1998, (1998 + 2))))\
+.select(col("cs_quantity").alias("quantity"),col("cs_list_price").alias("list_price")))).union((web_sales.crossJoin(date_dim)\
+.filter((col("ws_sold_date_sk") == col("d_date_sk")) & (col("d_year").between(1998, (1998 + 2))))\
+.select(col("ws_quantity").alias("quantity"),col("ws_list_price").alias("list_price"))))).alias("x")\
+.agg(avg((col("quantity") * col("list_price"))).alias('average_sales'))\
+.select("average_sales")
+((store_sales.crossJoin(item).crossJoin(date_dim)\
+.join((cross_items\
+.select("ss_item_sk")), col("ss_item_sk") == col("ss_item_sk"), 'semi')\
+.filter((col("ss_item_sk") == col("i_item_sk")) & (col("ss_sold_date_sk") == col("d_date_sk")) & (col("d_year") == (1998 + 2)) & (col("d_moy") == 11))\
+.groupBy("i_brand_id", "i_class_id", "i_category_id")\
+.agg(sum((col("ss_quantity") * col("ss_list_price"))).alias('sales'),count(lit(1)).alias('number_sales'))\
+.crossJoin((avg_sales).alias("subq").agg(first(col("average_sales")).alias("subq_0_408")).alias("subq_0_408_agg"))\
+.filter(col("sales") > col("subq_0_408_agg.subq_0_408"))\
+.select(lit('store').alias("channel"),"i_brand_id","i_class_id","i_category_id","sales","number_sales")).union((catalog_sales.crossJoin(item).crossJoin(date_dim)\
+.join((cross_items\
+.select("ss_item_sk")), col("cs_item_sk") == col("ss_item_sk"), 'semi')\
+.filter((col("cs_item_sk") == col("i_item_sk")) & (col("cs_sold_date_sk") == col("d_date_sk")) & (col("d_year") == (1998 + 2)) & (col("d_moy") == 11))\
+.groupBy("i_brand_id", "i_class_id", "i_category_id")\
+.agg(sum((col("cs_quantity") * col("cs_list_price"))).alias('sales'),count(lit(1)).alias('number_sales'))\
+.crossJoin((avg_sales).alias("subq").agg(first(col("average_sales")).alias("subq_0_552")).alias("subq_0_552_agg"))\
+.filter(col("sales") > col("subq_0_552_agg.subq_0_552"))\
+.select(lit('catalog').alias("channel"),"i_brand_id","i_class_id","i_category_id","sales","number_sales"))).union((web_sales.crossJoin(item).crossJoin(date_dim)\
+.join((cross_items\
+.select("ss_item_sk")), col("ws_item_sk") == col("ss_item_sk"), 'semi')\
+.filter((col("ws_item_sk") == col("i_item_sk")) & (col("ws_sold_date_sk") == col("d_date_sk")) & (col("d_year") == (1998 + 2)) & (col("d_moy") == 11))\
+.groupBy("i_brand_id", "i_class_id", "i_category_id")\
+.agg(sum((col("ws_quantity") * col("ws_list_price"))).alias('sales'),count(lit(1)).alias('number_sales'))\
+.crossJoin((avg_sales).alias("subq").agg(first(col("average_sales")).alias("subq_0_512")).alias("subq_0_512_agg"))\
+.filter(col("sales") > col("subq_0_512_agg.subq_0_512"))\
+.select(lit('web').alias("channel"),"i_brand_id","i_class_id","i_category_id","sales","number_sales")))).alias("y")\
+.groupBy(rollup(col("channel"), col("i_brand_id"), col("i_class_id"), col("i_category_id")))\
+.agg(sum(col("sales")).alias('sum_sales'),sum(col("number_sales")).alias('sum_number_sales'))\
+.select("channel","i_brand_id","i_class_id","i_category_id","sum_sales","sum_number_sales")\
+.orderBy(col("channel").asc(),col("i_brand_id").asc(),col("i_class_id").asc(),col("i_category_id").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_15.sql
+select  ca_zip
+       ,sum(cs_sales_price)
+ from catalog_sales
+     ,customer
+     ,customer_address
+     ,date_dim
+ where cs_bill_customer_sk = c_customer_sk
+ 	and c_current_addr_sk = ca_address_sk 
+ 	and ( substr(ca_zip,1,5) in ('85669', '86197','88274','83405','86475',
+                                   '85392', '85460', '80348', '81792')
+ 	      or ca_state in ('CA','WA','GA')
+ 	      or cs_sales_price > 500)
+ 	and cs_sold_date_sk = d_date_sk
+ 	and d_qoy = 2 and d_year = 2000
+ group by ca_zip
+ order by ca_zip
+ LIMIT 100;
+
+
+
+catalog_sales.crossJoin(customer).crossJoin(customer_address).crossJoin(date_dim)\
+.filter((col("cs_bill_customer_sk") == col("c_customer_sk")) & (col("c_current_addr_sk") == col("ca_address_sk")) & ((substring(col("ca_zip"), 1, 5).isin(['85669', '86197', '88274', '83405', '86475', '85392', '85460', '80348', '81792'])) | (col("ca_state").isin(['CA', 'WA', 'GA'])) | (col("cs_sales_price") > 500)) & (col("cs_sold_date_sk") == col("d_date_sk")) & (col("d_qoy") == 2) & (col("d_year") == 2000))\
+.groupBy("ca_zip")\
+.agg(sum(col("cs_sales_price")).alias('sum_cs_sales_price'))\
+.select("ca_zip","sum_cs_sales_price")\
+.orderBy(col("ca_zip").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_17.sql
+select  i_item_id
+       ,i_item_desc
+       ,s_state
+       ,count(ss_quantity) as store_sales_quantitycount
+       ,avg(ss_quantity) as store_sales_quantityave
+       ,stddev_samp(ss_quantity) as store_sales_quantitystdev
+       ,stddev_samp(ss_quantity)/avg(ss_quantity) as store_sales_quantitycov
+       ,count(sr_return_quantity) as store_returns_quantitycount
+       ,avg(sr_return_quantity) as store_returns_quantityave
+       ,stddev_samp(sr_return_quantity) as store_returns_quantitystdev
+       ,stddev_samp(sr_return_quantity)/avg(sr_return_quantity) as store_returns_quantitycov
+       ,count(cs_quantity) as catalog_sales_quantitycount ,avg(cs_quantity) as catalog_sales_quantityave
+       ,stddev_samp(cs_quantity) as catalog_sales_quantitystdev
+       ,stddev_samp(cs_quantity)/avg(cs_quantity) as catalog_sales_quantitycov
+ from store_sales
+     ,store_returns
+     ,catalog_sales
+     ,date_dim d1
+     ,date_dim d2
+     ,date_dim d3
+     ,store
+     ,item
+ where d1.d_quarter_name = '1998Q1'
+   and d1.d_date_sk = ss_sold_date_sk
+   and i_item_sk = ss_item_sk
+   and s_store_sk = ss_store_sk
+   and ss_customer_sk = sr_customer_sk
+   and ss_item_sk = sr_item_sk
+   and ss_ticket_number = sr_ticket_number
+   and sr_returned_date_sk = d2.d_date_sk
+   and d2.d_quarter_name in ('1998Q1','1998Q2','1998Q3')
+   and sr_customer_sk = cs_bill_customer_sk
+   and sr_item_sk = cs_item_sk
+   and cs_sold_date_sk = d3.d_date_sk
+   and d3.d_quarter_name in ('1998Q1','1998Q2','1998Q3')
+ group by i_item_id
+         ,i_item_desc
+         ,s_state
+ order by i_item_id
+         ,i_item_desc
+         ,s_state
+LIMIT 100;
+
+
+
+store_sales.crossJoin(store_returns).crossJoin(catalog_sales).crossJoin(date_dim.alias("d1")).crossJoin(date_dim.alias("d2")).crossJoin(date_dim.alias("d3")).crossJoin(store).crossJoin(item)\
+.filter((col("d1.d_quarter_name") == lit('1998Q1')) & (col("d1.d_date_sk") == col("ss_sold_date_sk")) & (col("i_item_sk") == col("ss_item_sk")) & (col("s_store_sk") == col("ss_store_sk")) & (col("ss_customer_sk") == col("sr_customer_sk")) & (col("ss_item_sk") == col("sr_item_sk")) & (col("ss_ticket_number") == col("sr_ticket_number")) & (col("sr_returned_date_sk") == col("d2.d_date_sk")) & (col("d2.d_quarter_name").isin(['1998Q1', '1998Q2', '1998Q3'])) & (col("sr_customer_sk") == col("cs_bill_customer_sk")) & (col("sr_item_sk") == col("cs_item_sk")) & (col("cs_sold_date_sk") == col("d3.d_date_sk")) & (col("d3.d_quarter_name").isin(['1998Q1', '1998Q2', '1998Q3'])))\
+.groupBy("i_item_id", "i_item_desc", "s_state")\
+.agg(count(col("ss_quantity")).alias('store_sales_quantitycount'),avg(col("ss_quantity")).alias('store_sales_quantityave'),stddev_samp(col("ss_quantity")).alias('store_sales_quantitystdev'),count(col("sr_return_quantity")).alias('store_returns_quantitycount'),avg(col("sr_return_quantity")).alias('store_returns_quantityave'),stddev_samp(col("sr_return_quantity")).alias('store_returns_quantitystdev'),count(col("cs_quantity")).alias('catalog_sales_quantitycount'),avg(col("cs_quantity")).alias('catalog_sales_quantityave'),stddev_samp(col("cs_quantity")).alias('catalog_sales_quantitystdev'))\
+.select("i_item_id","i_item_desc","s_state","store_sales_quantitycount","store_sales_quantityave","store_sales_quantitystdev",(col("store_sales_quantitystdev") / col("store_sales_quantityave")).alias("store_sales_quantitycov"),"store_returns_quantitycount","store_returns_quantityave","store_returns_quantitystdev",(col("store_returns_quantitystdev") / col("store_returns_quantityave")).alias("store_returns_quantitycov"),"catalog_sales_quantitycount","catalog_sales_quantityave","catalog_sales_quantitystdev",(col("catalog_sales_quantitystdev") / col("catalog_sales_quantityave")).alias("catalog_sales_quantitycov"))\
+.orderBy(col("i_item_id").asc(),col("i_item_desc").asc(),col("s_state").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_18.sql
+select  i_item_id,
+        ca_country,
+        ca_state, 
+        ca_county,
+        avg( cast(cs_quantity as decimal(12,2))) agg1,
+        avg( cast(cs_list_price as decimal(12,2))) agg2,
+        avg( cast(cs_coupon_amt as decimal(12,2))) agg3,
+        avg( cast(cs_sales_price as decimal(12,2))) agg4,
+        avg( cast(cs_net_profit as decimal(12,2))) agg5,
+        avg( cast(c_birth_year as decimal(12,2))) agg6,
+        avg( cast(cd1.cd_dep_count as decimal(12,2))) agg7
+ from catalog_sales, customer_demographics cd1, 
+      customer_demographics cd2, customer, customer_address, date_dim, item
+ where cs_sold_date_sk = d_date_sk and
+       cs_item_sk = i_item_sk and
+       cs_bill_cdemo_sk = cd1.cd_demo_sk and
+       cs_bill_customer_sk = c_customer_sk and
+       cd1.cd_gender = 'M' and 
+       cd1.cd_education_status = 'College' and
+       c_current_cdemo_sk = cd2.cd_demo_sk and
+       c_current_addr_sk = ca_address_sk and
+       c_birth_month in (9,5,12,4,1,10) and
+       d_year = 2001 and
+       ca_state in ('ND','WI','AL'
+                   ,'NC','OK','MS','TN')
+ group by rollup (i_item_id, ca_country, ca_state, ca_county)
+ order by ca_country,
+        ca_state, 
+        ca_county,
+	i_item_id
+ LIMIT 100;
+
+
+
+catalog_sales.crossJoin(customer_demographics.alias("cd1")).crossJoin(customer_demographics.alias("cd2")).crossJoin(customer).crossJoin(customer_address).crossJoin(date_dim).crossJoin(item)\
+.filter((col("cs_sold_date_sk") == col("d_date_sk")) & (col("cs_item_sk") == col("i_item_sk")) & (col("cs_bill_cdemo_sk") == col("cd1.cd_demo_sk")) & (col("cs_bill_customer_sk") == col("c_customer_sk")) & (col("cd1.cd_gender") == lit('M')) & (col("cd1.cd_education_status") == lit('College')) & (col("c_current_cdemo_sk") == col("cd2.cd_demo_sk")) & (col("c_current_addr_sk") == col("ca_address_sk")) & (col("c_birth_month").isin([9, 5, 12, 4, 1, 10])) & (col("d_year") == 2001) & (col("ca_state").isin(['ND', 'WI', 'AL', 'NC', 'OK', 'MS', 'TN'])))\
+.groupBy(rollup(col("i_item_id"), col("ca_country"), col("ca_state"), col("ca_county")))\
+.agg(avg(col("cs_quantity").cast("decimal(12, 2)")).alias('agg1'),avg(col("cs_list_price").cast("decimal(12, 2)")).alias('agg2'),avg(col("cs_coupon_amt").cast("decimal(12, 2)")).alias('agg3'),avg(col("cs_sales_price").cast("decimal(12, 2)")).alias('agg4'),avg(col("cs_net_profit").cast("decimal(12, 2)")).alias('agg5'),avg(col("c_birth_year").cast("decimal(12, 2)")).alias('agg6'),avg(col("cd1.cd_dep_count").cast("decimal(12, 2)")).alias('agg7'))\
+.select("i_item_id","ca_country","ca_state","ca_county","agg1","agg2","agg3","agg4","agg5","agg6","agg7")\
+.orderBy(col("ca_country").asc(),col("ca_state").asc(),col("ca_county").asc(),col("i_item_id").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_19.sql
+select  i_brand_id brand_id, i_brand brand, i_manufact_id, i_manufact,
+ 	sum(ss_ext_sales_price) ext_price
+ from date_dim, store_sales, item,customer,customer_address,store
+ where d_date_sk = ss_sold_date_sk
+   and ss_item_sk = i_item_sk
+   and i_manager_id=7
+   and d_moy=11
+   and d_year=1999
+   and ss_customer_sk = c_customer_sk 
+   and c_current_addr_sk = ca_address_sk
+   and substr(ca_zip,1,5) <> substr(s_zip,1,5) 
+   and ss_store_sk = s_store_sk 
+ group by i_brand
+      ,i_brand_id
+      ,i_manufact_id
+      ,i_manufact
+ order by ext_price desc
+         ,i_brand
+         ,i_brand_id
+         ,i_manufact_id
+         ,i_manufact
+LIMIT 100 ;
+
+
+
+date_dim.crossJoin(store_sales).crossJoin(item).crossJoin(customer).crossJoin(customer_address).crossJoin(store)\
+.filter((col("d_date_sk") == col("ss_sold_date_sk")) & (col("ss_item_sk") == col("i_item_sk")) & (col("i_manager_id") == 7) & (col("d_moy") == 11) & (col("d_year") == 1999) & (col("ss_customer_sk") == col("c_customer_sk")) & (col("c_current_addr_sk") == col("ca_address_sk")) & (substring(col("ca_zip"), 1, 5) != substring(col("s_zip"), 1, 5)) & (col("ss_store_sk") == col("s_store_sk")))\
+.groupBy("i_brand", "i_brand_id", "i_manufact_id", "i_manufact")\
+.agg(sum(col("ss_ext_sales_price")).alias('ext_price'))\
+.select(col("i_brand_id").alias("brand_id"),col("i_brand").alias("brand"),"i_manufact_id","i_manufact","ext_price")\
+.orderBy(col("ext_price").desc(),col("i_brand").asc(),col("i_brand_id").asc(),col("i_manufact_id").asc(),col("i_manufact").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------
+Processing file: query_22.sql
+select  i_product_name
+             ,i_brand
+             ,i_class
+             ,i_category
+             ,avg(inv_quantity_on_hand) qoh
+       from inventory
+           ,date_dim
+           ,item
+       where inv_date_sk=d_date_sk
+              and inv_item_sk=i_item_sk
+              and d_month_seq between 1212 and 1212 + 11
+       group by rollup(i_product_name
+                       ,i_brand
+                       ,i_class
+                       ,i_category)
+order by qoh, i_product_name, i_brand, i_class, i_category
+LIMIT 100;
+
+
+
+inventory.crossJoin(date_dim).crossJoin(item)\
+.filter((col("inv_date_sk") == col("d_date_sk")) & (col("inv_item_sk") == col("i_item_sk")) & (col("d_month_seq").between(1212, (1212 + 11))))\
+.groupBy(rollup(col("i_product_name"), col("i_brand"), col("i_class"), col("i_category")))\
+.agg(avg(col("inv_quantity_on_hand")).alias('qoh'))\
+.select("i_product_name","i_brand","i_class","i_category","qoh")\
+.orderBy(col("qoh").asc(),col("i_product_name").asc(),col("i_brand").asc(),col("i_class").asc(),col("i_category").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------

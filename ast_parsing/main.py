@@ -78,7 +78,7 @@ if __name__ == "__main__":
                         help="input JSONL file (default: sample_input_typed.jsonl in this folder)")
     parser.add_argument("-o", "--output", type=Path, default=Path(__file__).parent / "snippet_features.jsonl",
                         help="output JSONL file for per-snippet features")
-    parser.add_argument("--top", type=int, default=20, help="show top-N global tokens after run")
+    parser.add_argument("--top", type=int, default=None, help="show top-N global tokens after run (default: uncapped/all)")
     args = parser.parse_args()
 
     if not args.input.exists():
@@ -90,6 +90,9 @@ if __name__ == "__main__":
     print(f"Wrote snippet features to: {args.output}")
 
     top = results["global"].most_common(args.top)
-    print(f"Top {args.top} global tokens:")
+    if args.top is None:
+        print("Top (all) global tokens:")
+    else:
+        print(f"Top {args.top} global tokens:")
     for tok, cnt in top:
         print(f"  {tok}: {cnt}")
