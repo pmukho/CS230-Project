@@ -15,16 +15,11 @@
    ```
 3. Run the ast_parsing.py script and expect results to be stored in `.results/ast_parsing_results.jsonl`
 
-# Analysis Output Explained
+## Analysis Output Explained
 
 Each line in the `jsonl` output is matched like the schema given below
 
 ```json
 {
-  folder: string,
-  snippet: string,
-  pyspark_ops: [string],
-  uses_udf: boolean,
-  third_party_libs: [string]
 }
 ```

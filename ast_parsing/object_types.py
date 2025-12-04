@@ -17,8 +17,9 @@ class UDFInfo:
         return {
             "name": self.name,
             "decorator": self.decorator,
-            "snippet": self.snippet,
-            "return_type": self.return_type,
+            #redundant with AnalysisResult
+            # "snippet": self.snippet,
+            # TODO: fix. "return_type": self.return_type,
             "applied_to_df": self.applied_to_df,
             "registered_sql": self.registered_sql,
             "third_party_dependencies": sorted(self.third_party_dependencies),
