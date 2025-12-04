@@ -1,26 +1,25 @@
 rules:
   - id: pyspark-udf-definition
     languages: [python]
-    message: "$FUNC"
+    message: $FUNC%__%$ALIAS%__%$...ARGS%__%$BODY%__%$...OUTPUT
     severity: INFO
-    # metadata:
-    #   references:
-    #     - https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.functions.udf.html
+    metadata:
+      references:
+        - https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.functions.udf.html
     pattern-either:
       - pattern: |
-          @udf(...)
-          def $FUNC(...):
-              ...
+          @pyspark.sql.functions.udf($...OUTPUT)
+          def $FUNC($...ARGS):
+              $BODY
       - pattern: |
-          @udf
-          def $FUNC(...):
-              ...
-      - pattern: |
-          $FUNC = udf(...)
+          def $FUNC($...ARGS):
+            $BODY
+          ...
+          $ALIAS = pyspark.sql.functions.udf(<... $FUNC ...>, $...OUTPUT)
 
   - id: library-usage
     languages: [python]
-    message: "$FUNC:$LIB:$CALL"
+    message: "$FUNC%__%$LIB%__%$CALL"
     severity: INFO
     pattern-either:
       - pattern: |
@@ -42,9 +41,9 @@ rules:
     languages: [python]
     message: "Detected PySpark DF operation."
     severity: INFO
-    # metadata:
-    #   references:
-    #     - https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.html
+    metadata:
+      references:
+        - https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.html
     pattern-either:
       - patterns:
         - pattern: $DF.$OP(...)
