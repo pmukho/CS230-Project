@@ -13,3 +13,4 @@ mo_sql_parsing
 pytest
 pyspark
 openai
+sqlglot
