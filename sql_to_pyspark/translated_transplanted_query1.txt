@@ -1,0 +1,49 @@
+Processing file: transplanted_query1.sql
+WITH "customer_total_return" AS (
+  SELECT
+    MY_UDF("store_returns"."sr_customer_sk") AS ctr_customer_sk,
+    MY_UDF("store_returns"."sr_store_sk") AS ctr_store_sk,
+    SUM("store_returns"."sr_return_amt") AS "ctr_total_return"
+  FROM "store_returns" AS "store_returns"
+  JOIN "date_dim" AS "date_dim"
+    ON "date_dim"."d_date_sk" = "store_returns"."sr_returned_date_sk"
+    AND "date_dim"."d_year" = 2001
+  GROUP BY
+    "store_returns"."sr_customer_sk",
+    "store_returns"."sr_store_sk"
+), "_u_0" AS (
+  SELECT
+    AVG("ctr2"."ctr_total_return") * 1.2 AS "_col_0",
+    MY_UDF("ctr2"."ctr_store_sk") AS _u_1
+  FROM "customer_total_return" AS "ctr2"
+  GROUP BY
+    "ctr2"."ctr_store_sk"
+)
+SELECT
+  MY_UDF("customer"."c_customer_id") AS c_customer_id
+FROM "customer_total_return" AS "ctr1"
+JOIN "store" AS "store"
+  ON "ctr1"."ctr_store_sk" = "store"."s_store_sk" AND "store"."s_state" = 'TN'
+JOIN "customer" AS "customer"
+  ON "ctr1"."ctr_customer_sk" = "customer"."c_customer_sk"
+LEFT JOIN "_u_0" AS "_u_0"
+  ON "_u_0"."_u_1" = "ctr1"."ctr_store_sk"
+WHERE
+  "_u_0"."_col_0" < "ctr1"."ctr_total_return"
+ORDER BY
+  "c_customer_id"
+LIMIT 100;
+customer_total_return = store_returns.alias("store_returns").join(date_dim.alias("date_dim"), (col("date_dim.d_date_sk") == col("store_returns.sr_returned_date_sk")) & (col("date_dim.d_year") == 2001), 'inner')\
+.groupBy("store_returns.sr_customer_sk", "store_returns.sr_store_sk")\
+.agg(sum(col("store_returns.sr_return_amt")).alias('ctr_total_return'))\
+.select(my_udf(col("store_returns.sr_customer_sk")).alias("ctr_customer_sk"),my_udf(col("store_returns.sr_store_sk")).alias("ctr_store_sk"),"ctr_total_return")
+_u_0 = customer_total_return.alias("ctr2")\
+.groupBy("ctr2.ctr_store_sk")\
+.agg(avg(col("ctr2.ctr_total_return")).alias('avg_ctr2_ctr_total_return'))\
+.select((col("avg_ctr2_ctr_total_return") * 1.2).alias("_col_0"),my_udf(col("ctr2.ctr_store_sk")).alias("_u_1"))
+customer_total_return.alias("ctr1").join(store.alias("store"), (col("ctr1.ctr_store_sk") == col("store.s_store_sk")) & (col("store.s_state") == lit('TN')), 'inner').join(customer.alias("customer"), col("ctr1.ctr_customer_sk") == col("customer.c_customer_sk"), 'inner').join(_u_0.alias("_u_0"), col("_u_0._u_1") == col("ctr1.ctr_store_sk"), 'left')\
+.filter(col("_u_0._col_0") < col("ctr1.ctr_total_return"))\
+.select(my_udf(col("customer.c_customer_id")).alias("c_customer_id"))\
+.orderBy(col("c_customer_id").asc())\
+.limit(100)
+----------------------------------------------------------------------------------------------------

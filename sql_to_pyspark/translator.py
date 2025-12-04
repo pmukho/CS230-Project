@@ -9,7 +9,7 @@ def translate_sql_to_pyspark(query: str) -> str:
     v_parse = parse(query)
     v_json = json.loads(json.dumps(v_parse,indent=4))
 
-    # print(f'v_json: {v_json}')
+    # # # print(f'v_json: {v_json}')
     
     # Define aggregate functions (functions that combine multiple rows)
     AGGREGATE_FUNCTIONS = {
@@ -40,20 +40,20 @@ def translate_sql_to_pyspark(query: str) -> str:
         if type(select_item) is not dict:
             return False
         if 'over' in select_item:
-            # print(f'{select_item} is a window function')
+            # # # print(f'{select_item} is a window function')
             return True
         # Look inside value
         val = select_item.get('value')
         if type(val) is dict:
             if 'over' in val:
-                # print(f'{select_item} is a window function (value)')
+                # # # print(f'{select_item} is a window function (value)')
                 return True
             # function form: {'sum': {'over': {...}, 'value': 'col'}}
             try:
                 inner_key = list(val.keys())[0]
                 inner_val = val[inner_key]
                 if type(inner_val) is dict and 'over' in inner_val:
-                    # print(f'{select_item} is a window function (inner_val)')
+                    # # # print(f'{select_item} is a window function (inner_val)')
                     return True
             except Exception:
                 pass
@@ -122,6 +122,36 @@ def translate_sql_to_pyspark(query: str) -> str:
         find_correlations(where_clause)
         return correlations if correlations else None
     
+    def collect_aggregates(expr):
+        """Recursively collect all aggregate functions from an expression."""
+        aggs = []
+        if type(expr) is dict:
+            if is_aggregate_function(expr) and not is_window_expression(expr):
+                return [expr]
+            for k, v in expr.items():
+                if k != 'literal': # skip literals
+                    aggs.extend(collect_aggregates(v))
+        elif type(expr) is list:
+            for item in expr:
+                aggs.extend(collect_aggregates(item))
+        return aggs
+
+    def replace_aggregates_with_aliases(expr, agg_aliases):
+        """Recursively replace aggregate functions with their aliases."""
+        # # print(f"DEBUG: Replacing aggregates with aliases: {expr}")
+        # # print(f"DEBUG: Agg aliases: {agg_aliases}")
+        if type(expr) is dict:
+            if is_aggregate_function(expr) and not is_window_expression(expr):
+                # Try to find matching alias
+                agg_str = get_agg_key(expr)
+                if agg_aliases and agg_str in agg_aliases:
+                    return agg_aliases[agg_str]
+            # Recurse
+            return {k: replace_aggregates_with_aliases(v, agg_aliases) for k, v in expr.items()}
+        elif type(expr) is list:
+            return [replace_aggregates_with_aliases(item, agg_aliases) for item in expr]
+        return expr
+
     def extract_aggregate_from_expr(expr):
         """
         Traverse an expression dict to find the aggregate function.
@@ -165,7 +195,7 @@ def translate_sql_to_pyspark(query: str) -> str:
         Translate a scalar subquery to PySpark using JOIN method.
         Returns a dict with aggregation DataFrame code and join information.
         """
-        # print(f'DEBUG: translating subquery: {subquery_dict}')
+        # # # print(f'DEBUG: translating subquery: {subquery_dict}')
         # Extract the aggregate function from SELECT
         select_data = subquery_dict.get('select') or subquery_dict.get('select_distinct')
         if not select_data:
@@ -356,7 +386,7 @@ def translate_sql_to_pyspark(query: str) -> str:
     
     def translate_condition(cond_dict):
         """Translate a condition (like 'gt', 'lt', 'eq') to PySpark syntax"""
-        # print(f'translating condition: {cond_dict}')
+        # # # print(f'translating condition: {cond_dict}')
         if type(cond_dict) is not dict:
             return str(cond_dict)
         
@@ -509,7 +539,7 @@ def translate_sql_to_pyspark(query: str) -> str:
         
         # LIKE / NOT LIKE -> startswith/endswith/contains when possible
         def translate_like(col_expr, pattern):
-            # print(f'translating like: {col_expr}, {pattern}')
+            # # # print(f'translating like: {col_expr}, {pattern}')
             left_str = f'col("{col_expr}")' if type(col_expr) is str else str(col_expr)
             if type(pattern) is dict and 'literal' in pattern:
                 pat = str(pattern['literal'])
@@ -614,7 +644,7 @@ def translate_sql_to_pyspark(query: str) -> str:
             val: The value to translate
             prefer_literal: If True, treat ambiguous strings as literals (for CASE THEN/ELSE)
         """
-        # print(f'translating value: {val}')
+        # # # print(f'translating value: {val}')
         if type(val) is str:
             # For CASE statements THEN/ELSE values, default to literals unless clearly a column
             # Heuristic: single word strings in CASE are usually literals like 'High', 'Low', 'Active'
@@ -681,7 +711,7 @@ def translate_sql_to_pyspark(query: str) -> str:
         """Build a PySpark Window spec string from an OVER() dict.
         Supports keys: partitionby/partition_by, orderby/order_by, rows/range frames.
         """
-        # print(f'building window spec: {over_spec}')
+        # # # print(f'building window spec: {over_spec}')
         if type(over_spec) is not dict:
             return "Window.unboundedWindow"  # fallback minimal window
 
@@ -791,14 +821,14 @@ def translate_sql_to_pyspark(query: str) -> str:
 
     def translate_function(func_dict):
         """Translate a function from parsed SQL structure to PySpark syntax"""
-        # print(f'translating function: {func_dict}')
-        # # print(func_dict)
+        # # # print(f'translating function: {func_dict}')
+        # # # # print(func_dict)
         if type(func_dict) is not dict:
             return None
         
         # Handle window functions via OVER clause (top-level form: {'over': {...}})
         if 'over' in func_dict:
-            # print(f'has top level over: {func_dict}')
+            # # # print(f'has top level over: {func_dict}')
             over_spec = func_dict['over']
             # Expect inner expression under 'value' or 'expr' (sibling or nested)
             inner_expr_spec = func_dict.get('value') or func_dict.get('expr')
@@ -863,12 +893,52 @@ def translate_sql_to_pyspark(query: str) -> str:
             else:
                 return f"lit({lit_val})"
         
+        # Handle CAST
+        if 'cast' in func_dict:
+            # Identify format
+            expr = None
+            target_type = None
+            
+            # Case 1: {'cast': expr, 'as': type} (top level keys)
+            if 'as' in func_dict:
+                expr = func_dict['cast']
+                target_type = func_dict['as']
+            else:
+                val = func_dict['cast']
+                # Case 2: {'cast': {'value': expr, 'as': type}} or {'to': type}
+                if type(val) is dict:
+                    expr = val.get('value')
+                    target_type = val.get('as') or val.get('to')
+                # Case 3: {'cast': [expr, type]} (if parsed that way)
+                elif type(val) is list and len(val) == 2:
+                    expr = val[0]
+                    target_type = val[1]
+            
+            if expr is not None and target_type is not None:
+                # Translate expression
+                expr_str = translate_value(expr)
+                
+                # Stringify target type
+                # It might be a dict like {'decimal': [12, 2]} or string 'int'
+                if type(target_type) is dict:
+                    # Reconstruct type string
+                    k = list(target_type.keys())[0]
+                    v = target_type[k]
+                    if type(v) is list:
+                        type_str = f"{k}({', '.join(str(x) for x in v)})"
+                    else:
+                        type_str = f"{k}({v})"
+                else:
+                    type_str = str(target_type)
+                
+                return f'{expr_str}.cast("{type_str}")'
+
         # Get the function name and arguments
         func_name = list(func_dict.keys())[0]
         func_args = func_dict[func_name]
         
         # Convert function name to lowercase for PySpark
-        # # print(func_name)
+        # # # # print(func_name)
         if func_name in SPECIAL_FUNCTION_MAPPING:
             pyspark_func = SPECIAL_FUNCTION_MAPPING[func_name]
         else:
@@ -895,7 +965,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                 base_call = f"{pyspark_func}()"
             else:
                 base_call = f'{pyspark_func}({translate_value(value_arg)})'
-            # print(f'has function-as-window form: {func_args}\n base_call: {base_call}')
+            # # # print(f'has function-as-window form: {func_args}\n base_call: {base_call}')
             window_spec = build_window_spec(func_args['over'])
             return f"{base_call}.over({window_spec})"
 
@@ -958,7 +1028,7 @@ def translate_sql_to_pyspark(query: str) -> str:
 
 
     def fn_from(value):
-        # print(f'translating from: {value}')
+        # # # print(f'translating from: {value}')
         result_from=""
         if type(value) is str:
             result_from = format({ "from": value })
@@ -998,9 +1068,28 @@ def translate_sql_to_pyspark(query: str) -> str:
                              return f"({subq}).alias(\"{item['name']}\")"
                         return f'{item["value"]}.alias("{item["name"]}")'
                     elif "value" in item:
-                        return item['value']
-                    # Handle explicit join dicts later
-                    return None
+                        # Handle case where value is a dict (subquery) but no alias
+                        # Or simple table name in dict wrapper
+                        val = item['value']
+                        if type(val) is dict:
+                            # Unaliased subquery in FROM list
+                            # PySpark requires alias for subquery
+                            subq = fn_genSQL_or_set(val)
+                            # Generate a random alias if missing
+                            return f"({subq}).alias(\"subq_{id(val) % 1000}\")"
+                        return str(val)
+                    
+                    # Fallback for other dict structures in FROM (e.g. unhandled types)
+                    # Check if it's a set operation dict
+                    if _find_set_op_key(item):
+                        # It's a set operation directly in the FROM list
+                        # PySpark requires alias for subqueries/sets in join
+                        subq = fn_genSQL_or_set(item)
+                        return f"({subq}).alias(\"subq_{id(item) % 1000}\")"
+                        
+                    # Don't return None, return string representation to avoid crossJoin(None)
+                    # # print(f"DEBUG: process_table_item fallback for: {item}")
+                    return str(item)
                 return str(item)
 
             # First pass: Separate base tables from explicit joins
@@ -1009,7 +1098,7 @@ def translate_sql_to_pyspark(query: str) -> str:
             
             has_explicit_joins = False
             for item in value:
-                if type(item) is dict and any(k in item for k in ['inner join', 'left join', 'right join', 'full outer join', 'cross join']):
+                if type(item) is dict and any(k in item for k in ['join', 'inner join', 'left join', 'right join', 'full outer join', 'cross join']):
                     has_explicit_joins = True
                     explicit_join_items.append(item)
                 else:
@@ -1040,7 +1129,10 @@ def translate_sql_to_pyspark(query: str) -> str:
                 join_table_raw = None
                 join_condition = None
                 
-                if 'inner join' in item:
+                if 'join' in item:
+                    join_type = 'inner'
+                    join_table_raw = item['join']
+                elif 'inner join' in item:
                     join_type = 'inner'
                     join_table_raw = item['inner join']
                 elif 'left join' in item:
@@ -1084,7 +1176,16 @@ def translate_sql_to_pyspark(query: str) -> str:
             
 
     def fn_select(value, outer_alias=None, scalar_subq_list=None, agg_aliases=None):
-        # print(f'translating select: {value} \n')
+        # print('\n')
+        # print(f'FN_SELECT: value: {value}')
+        # print(f'FN_SELECT: outer_alias: {outer_alias}')
+        # print(f'FN_SELECT: scalar_subq_list: {scalar_subq_list}')
+        # print(f'FN_SELECT: agg_aliases: {agg_aliases}')
+        # print('\n')
+        # # print(f'translating select: {value} \n')
+        # # print(f'outer_alias: {outer_alias}')
+        # # print(f'scalar_subq_list: {scalar_subq_list}')
+        # # print(f'agg_aliases: {agg_aliases}')
         result_select=""
         
         # Check if we should qualify columns (only if outer_alias exists and we have scalar subqueries)
@@ -1099,7 +1200,7 @@ def translate_sql_to_pyspark(query: str) -> str:
             if "all_columns" in value.keys():
                 result_select = "\"*\""
             elif "name" in value.keys():
-                # Check if it's an aggregate function
+                # Check if it's an aggregate function (top-level)
                 if type(value['value']) is dict and is_aggregate_function(value['value']) and not is_window_expression(value):
                     # Aggregate function with alias - just use the alias name
                     result_select = result_select + "\""+value['name']+"\","
@@ -1111,7 +1212,13 @@ def translate_sql_to_pyspark(query: str) -> str:
                     result_select = result_select + f'coalesce(col("{agg_alias}.{value["name"]}"), lit(0)).alias("{value["name"]}"),'
                 elif type(value['value']) is dict:
                     # Scalar function with alias - translate to PySpark
-                    func_str = translate_function(value['value'])
+                    # Use alias replacement for any aggregates inside the function
+                    mod_expr = replace_aggregates_with_aliases(value['value'], agg_aliases)
+                    if type(mod_expr) is str:
+                        func_str = f'col("{mod_expr}")'
+                    else:
+                        func_str = translate_function(mod_expr)
+                        
                     if 'over' in value:
                         func_str = func_str + f".over({build_window_spec(value['over'])})"
                     result_select = result_select + func_str + ".alias(\""+value['name']+"\"),"
@@ -1123,14 +1230,11 @@ def translate_sql_to_pyspark(query: str) -> str:
                     # Aggregate function - skip, handled by fn_agg
                     # BUT we must select the alias generated by fn_agg
                     if agg_aliases:
-                        found_alias = False
-                        for k, v in value['value'].items():
-                            agg_expr = f"{k.upper()}({v})"
-                            if agg_expr in agg_aliases:
-                                result_select = result_select + "\""+agg_aliases[agg_expr]+"\","
-                                found_alias = True
-                                break
-                        if not found_alias:
+                        agg_str = get_agg_key(value['value'])
+                        if agg_str in agg_aliases:
+                            result_select = result_select + "\""+agg_aliases[agg_str]+"\","
+                        else:
+                            # Fallback if strict string matching fails (shouldn't happen with updated fn_agg)
                             pass
                     else:
                         pass
@@ -1140,7 +1244,13 @@ def translate_sql_to_pyspark(query: str) -> str:
                     result_select = result_select + "\"# SUBQUERY\","
                 else:
                     # Scalar function without alias
-                    func_str = translate_function(value['value'])
+                    # Use alias replacement for any aggregates inside the function
+                    mod_expr = replace_aggregates_with_aliases(value['value'], agg_aliases)
+                    if type(mod_expr) is str:
+                        func_str = f'col("{mod_expr}")'
+                    else:
+                        func_str = translate_function(mod_expr)
+                        
                     # Handle parent-level OVER on this select item
                     if 'over' in value:
                         func_str = func_str + f".over({build_window_spec(value['over'])})"
@@ -1167,15 +1277,9 @@ def translate_sql_to_pyspark(query: str) -> str:
                             else:
                                 # No explicit alias - use the one generated by fn_agg
                                 if agg_aliases:
-                                    found_alias = False
-                                    for k, v in item_select['value'].items():
-                                        agg_expr = f"{k.upper()}({v})"
-                                        if agg_expr in agg_aliases:
-                                            result_select = result_select + "\""+agg_aliases[agg_expr]+"\","
-                                            found_alias = True
-                                            break
-                                    if not found_alias:
-                                        pass
+                                    agg_str = get_agg_key(item_select['value'])
+                                    if agg_str in agg_aliases:
+                                        result_select = result_select + "\""+agg_aliases[agg_str]+"\","
                                 else:
                                     pass
                         elif 'select' in item_select['value']:
@@ -1189,8 +1293,13 @@ def translate_sql_to_pyspark(query: str) -> str:
                             else:
                                 result_select = result_select + f"\"# SUBQUERY\","
                         elif is_window_expression(item_select):
-                            func_str = translate_function(item_select['value'])
-                            # Scalar function without alias
+                            # Use alias replacement for any aggregates inside the window expression arguments
+                            mod_expr = replace_aggregates_with_aliases(item_select['value'], agg_aliases)
+                            if type(mod_expr) is str:
+                                func_str = f'col("{mod_expr}")'
+                            else:
+                                func_str = translate_function(mod_expr)
+                                
                             # Handle parent-level OVER on this select item
                             func_str = func_str + f".over({build_window_spec(item_select['over'])})"
                             if "name" in item_select:
@@ -1198,7 +1307,13 @@ def translate_sql_to_pyspark(query: str) -> str:
                             result_select = result_select + func_str + ","
                         else:
                             # Scalar function
-                            func_str = translate_function(item_select['value'])
+                            # Use alias replacement for any aggregates inside the function
+                            mod_expr = replace_aggregates_with_aliases(item_select['value'], agg_aliases)
+                            if type(mod_expr) is str:
+                                func_str = f'col("{mod_expr}")'
+                            else:
+                                func_str = translate_function(mod_expr)
+                                
                             if "name" in item_select.keys():
                                 result_select = result_select + func_str + ".alias(\""+item_select['name']+"\"),"
                             else:
@@ -1211,51 +1326,75 @@ def translate_sql_to_pyspark(query: str) -> str:
                         else:
                             # Column without alias
                             if 'over' in item_select and type(item_select['value']) is dict:
-                                func_str = translate_function(item_select['value'])
+                                mod_expr = replace_aggregates_with_aliases(item_select['value'], agg_aliases)
+                                if type(mod_expr) is str:
+                                    func_str = f'col("{mod_expr}")'
+                                else:
+                                    func_str = translate_function(mod_expr)
                                 func_str = func_str + f".over({build_window_spec(item_select['over'])})"
                                 result_select = result_select + func_str + ","
                             else:
                                 result_select = result_select + "\""+item_select['value']+"\"," 
         return result_select[:-1] if result_select.endswith(",") else result_select
 
+    def extract_in_subqueries(condition):
+        """
+        Recursively extract IN subqueries from a WHERE condition tree.
+        Returns (filter_expression_string, list_of_in_subqueries)
+        """
+        if type(condition) is not dict:
+            return translate_condition(condition), []
+            
+        # Handle AND - allow splitting
+        if 'and' in condition:
+            sub_conditions = condition['and']
+            if type(sub_conditions) is list:
+                filters = []
+                subqs = []
+                for sub in sub_conditions:
+                    f_str, s_list = extract_in_subqueries(sub)
+                    if f_str:
+                        filters.append(f"({f_str})")
+                    subqs.extend(s_list)
+                
+                # Check if we have filters to join
+                combined_filter = " & ".join(filters) if filters else None
+                return combined_filter, subqs
+        
+        # Handle IN with subquery
+        if 'in' in condition:
+            in_val = condition['in']
+            if type(in_val) is list and len(in_val) == 2:
+                column = in_val[0]
+                possible_subq = in_val[1]
+                if type(possible_subq) is dict and ('select' in possible_subq or 'select_distinct' in possible_subq):
+                    return None, [{
+                        'type': 'in_subquery',
+                        'column': column,
+                        'subquery': possible_subq
+                    }]
+        
+        # Handle everything else (OR, NOT, comparisons) using standard translation
+        return translate_condition(condition), []
+
     def fn_where(value):
         """
         Translate WHERE clause to PySpark.
         Handles simple conditions and IN subqueries.
+        Returns a dictionary with 'filters' (string) and 'subqueries' (list).
         """
-        # print(f'translating where: {value}')
-        result_where=""
+        # # # print(f'translating where: {value}')
         
-        # Check if this is an IN clause with a subquery
-        if type(value) is dict and 'in' in value:
-            in_clause = value['in']
-            if type(in_clause) is list and len(in_clause) == 2:
-                column = in_clause[0]
-                subquery_or_list = in_clause[1]
-                
-                # Check if the second element is a subquery (dict with 'select')
-                if type(subquery_or_list) is dict and 'select' in subquery_or_list:
-                    # This is a subquery - we need to handle it specially
-                    # Return special marker that will be handled in fn_genSQL
-                    return {
-                        'type': 'in_subquery',
-                        'column': column,
-                        'subquery': subquery_or_list
-                    }
+        filters, subqueries = extract_in_subqueries(value)
         
-        # Try to translate to PySpark column expressions
-        if type(value) is dict:
-            translated = translate_condition(value)
-            if translated and translated != str(value):
-                return translated
-        
-        # Default: use SQL format for the WHERE clause
-        result_where = format({ "where": value })[6:]
-        return result_where
+        return {
+            'filters': filters,
+            'subqueries': subqueries
+        }
 
 
     def fn_groupby(value):
-        # print(f'translating groupby: {value}')
+        # # # print(f'translating groupby: {value}')
         
         def process_group_item(item):
             if type(item) is dict:
@@ -1290,21 +1429,18 @@ def translate_sql_to_pyspark(query: str) -> str:
         Translate HAVING clause to PySpark, replacing aggregate functions with their aliases
         and converting to PySpark column expressions.
         """
-        # print(f'translating having: {value}')
+        # # # print(f'translating having: {value}')
         def replace_agg_in_structure(obj):
             """Recursively replace aggregate functions with column references"""
             if type(obj) is dict:
                 # Check if this is an aggregate function
                 if is_aggregate_function(obj):
-                    # Get the function name and argument
-                    func_name = list(obj.keys())[0]
-                    func_arg = obj[func_name]
-                    agg_expr = f"{func_name.upper()}({func_arg})"
+                    # Check if we have an alias for this aggregate
+                    # Use string representation as key (matches fn_agg)
+                    agg_str = get_agg_key(obj)
+                    if agg_aliases and agg_str in agg_aliases:
+                        return agg_aliases[agg_str]
                     
-                    # If we have an alias for this aggregate, return a column reference
-                    if agg_aliases and agg_expr in agg_aliases:
-                        return agg_aliases[agg_expr]
-                    # Otherwise, return as-is (will be handled by translate_condition)
                     return obj
                 else:
                     # Recursively process dictionary values
@@ -1327,59 +1463,83 @@ def translate_sql_to_pyspark(query: str) -> str:
         result_having_sql = format({ "having": modified_value })[7:]
         return result_having_sql
 
-    def fn_agg(data):
+    
+    def get_agg_key(agg_dict):
+        """Generate a consistent key for an aggregation dictionary."""
+        # # print(f"DEBUG: Generating key for {agg_dict}")
+        # # print(f"DEBUG: Key: {json.dumps(agg_dict, sort_keys=True)}")
+        return json.dumps(agg_dict, sort_keys=True)
+
+    def fn_agg(data, agg_aliases):
         # v_parse = parse(query)
-        # print(f'\n\n fn_agg: {v_parse}')
+        # print(f'\n\n fn_agg: {data}')
         v_agg = ""
-        agg_aliases = {}  # Map from aggregate expression to alias
+        # agg_aliases = {}  # Map from aggregate expression string to alias
         
         if "select" not in data and "select_distinct" not in data:
             return "", {}
         
-        # Handle both single (dict) and multiple (list) select items
         select_items = data.get("select") or data.get("select_distinct")
         if type(select_items) is dict:
             select_items = [select_items]
         
-        for i in select_items:
-            # print(f'fn_agg: i: {i}')
-            if type(i) is dict and "value" in i and type(i["value"]) is dict and is_aggregate_function(i["value"]) and not is_window_expression(i):
-                # print(f'fn_agg: i is an aggregate function')
-                # Only process actual aggregate functions
-                for key,value in i["value"].items():
-                    # print(f'fn_agg: key: {key}, value: {value}')
-                    
-                    # Translate the argument of the aggregate function
-                    if type(value) is dict:
-                        arg_translated = translate_value(value)
-                    else:
-                        arg_translated = f'col("{value}")' if type(value) is str and value != "*" else f'lit(1)' if value == "*" else str(value)
-
-                    # Only add alias if SQL has AS clause
-                    if "name" in i:
-                        alias_name = i["name"]
-                        v_agg = v_agg + (f"{key}({arg_translated}).alias('{alias_name}')") +","
-                    else:
-                        # No alias - create automatic alias
-                        # Format: function_name_column (e.g., count_star, sum_salary)
-                        if type(value) is str:
-                            col_name = str(value).replace("*", "star").replace(".", "_")
-                        else:
-                            col_name = "expression"
-                        alias_name = f"{key.lower()}_{col_name}"
-                        v_agg = v_agg + (f"{key}({arg_translated}).alias('{alias_name}')") +","
-                    
-                    # Store mapping for HAVING clause translation
-                    agg_expr = f"{key.upper()}({value})"
-                    agg_aliases[agg_expr] = alias_name
+        seen_aggs = set()
         
-        v_agg = v_agg.replace("\n", "")
-        # print(f'fn_agg returns: v_agg: {v_agg}, agg_aliases: {agg_aliases}')
+        for i in select_items:
+            # Handle item value
+            val = i.get("value") if type(i) is dict else i
+            
+            # Determine if this item IS itself a top-level aggregate (for explicit aliasing)
+            top_level_agg = None
+            if type(i) is dict and "value" in i and type(i["value"]) is dict:
+                 if is_aggregate_function(i["value"]) and not is_window_expression(i["value"]):
+                      top_level_agg = i["value"]
+            
+            # Find all aggregates in this expression (nested or top level)
+            aggs = collect_aggregates(val)
+            
+            for agg in aggs:
+                # Key for deduplication/lookup
+                agg_str = get_agg_key(agg) # Consistent JSON string
+                if agg_str in seen_aggs:
+                    continue
+                
+                seen_aggs.add(agg_str)
+                
+                func_name = list(agg.keys())[0]
+                func_arg = agg[func_name]
+                
+                # Determine Alias
+                alias_name = None
+                # If this specific agg object matches the top-level value, use the user's alias if available
+                # Use strict object comparison or key comparison
+                if top_level_agg is not None and get_agg_key(top_level_agg) == agg_str and "name" in i:
+                    alias_name = i["name"]
+                else:
+                    # Auto alias
+                    if type(func_arg) is str:
+                         clean = func_arg.replace("*", "star").replace(".", "_")
+                         alias_name = f"{func_name.lower()}_{clean}"
+                    else:
+                         # Use hash for complex expression
+                         alias_name = f"{func_name.lower()}_expr_{abs(hash(agg_str)) % 10000}"
+                
+                # Generate PySpark code
+                if type(func_arg) is dict:
+                    arg_translated = translate_value(func_arg)
+                else:
+                    arg_translated = f'col("{func_arg}")' if type(func_arg) is str and func_arg != "*" else f'lit(1)' if func_arg == "*" else str(func_arg)
+                
+                v_agg += f"{func_name}({arg_translated}).alias('{alias_name}'),"
+                agg_aliases[agg_str] = alias_name
+                (f"DEBUG: Stored alias for {agg_str} -> {alias_name}")
+            # print(f"DEBUG: agg_aliases: {agg_aliases}")
+        
         return v_agg[:-1] if v_agg else "", agg_aliases
 
 
     def fn_orderby(query):
-        # print(f'translating orderby: {query}')
+        # # # print(f'translating orderby: {query}')
         v_parse = parse(query)
         v_orderby_collist=""
         v_orderby = v_parse["orderby"]
@@ -1405,13 +1565,20 @@ def translate_sql_to_pyspark(query: str) -> str:
 
 
     def fn_limit(query):
-        # print(f'translating limit: {query}')
+        # # # print(f'translating limit: {query}')
         v_parse = parse(query)
         v_limit = v_parse["limit"]
         return v_limit
 
 
-    def fn_genSQL(data):
+    def fn_genSQL(data, agg_aliases=None):
+        # print('\n')
+        # print(f'ENTRYPOINT fn_genSQL: {data}')
+        # print(f'ENTRYPOINT agg_aliases: {agg_aliases}')
+        # print('\n')
+        # if type(data) is list:
+            # # print('data is a list, length: ', len(data))
+            # # # print(data[-1])
         v_fn_from = v_fn_where = v_fn_groupby = v_fn_agg = v_fn_select = v_fn_orderby = v_fn_limit = v_fn_having = ""
         v_fn_distinct = False
         has_aggregate = False
@@ -1420,7 +1587,9 @@ def translate_sql_to_pyspark(query: str) -> str:
         use_spark_sql_fallback = False
         outer_table_aliases = []  # List of all outer table aliases
         outer_table_alias = None  # Single primary alias (legacy)
-        agg_aliases = {}  # Store aggregate function aliases for HAVING clause
+        if agg_aliases is None:
+            agg_aliases = {}
+        # agg_aliases = {}  # Store aggregate function aliases for HAVING clause
         
         # Extract outer table aliases
         if "from" in data:
@@ -1477,7 +1646,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                      # Return PySpark boolean expression string
                      return f"col('{agg_alias}.{alias_name}').isNotNull()"
                  else:
-                     #  print(f"DEBUG: Failed to translate EXISTS subquery: {subquery}")
+                     #  # # print(f"DEBUG: Failed to translate EXISTS subquery: {subquery}")
                      pass
                  return expr
 
@@ -1538,49 +1707,107 @@ def translate_sql_to_pyspark(query: str) -> str:
                             has_aggregate = True
                             break
         
-        for key,value in data.items():
-            # handle from
-            if str(key)=="from":
-                v_fn_from = fn_from(value)
+        # for key,value in data.items():
+        #     # handle from
+        #     if str(key)=="from":
+        #         v_fn_from = fn_from(value)
 
-            #handle where
-            if str(key) =="where":
-                v_fn_where = fn_where(value)
+        #     #handle where
+        #     if str(key) =="where":
+        #         v_fn_where = fn_where(value)
 
-            #handle groupby
-            if str(key) =="groupby":
-                v_fn_groupby = fn_groupby(value)
+        #     #handle groupby
+        #     if str(key) =="groupby":
+        #         v_fn_groupby = fn_groupby(value)
 
-            #handle agg - call if there's a groupby OR if there are aggregate functions (excluding windowed aggs)
-            if str(key) =="groupby" or ((str(key) == "select" or str(key) == "select_distinct") and has_aggregate):
-                # FIX: pass data, not query
-                v_fn_agg, agg_aliases = fn_agg(data)
+        #     #handle agg - call if there's a groupby OR if there are aggregate functions (excluding windowed aggs)
+        #     if str(key) =="groupby" or ((str(key) == "select" or str(key) == "select_distinct") and has_aggregate):
+        #         # FIX: pass data, not query
+        #         v_fn_agg, agg_aliases = fn_agg(data, agg_aliases)
+        #         # # print(f"DEBUG: v_fn_agg: {v_fn_agg}")
+        #         # # print(f"DEBUG: agg_aliases: {agg_aliases}")
             
-            #handle having
-            if str(key) =="having":
-                v_fn_having = fn_having(value, agg_aliases)
+        #     #handle having
+        #     if str(key) =="having":
+        #         v_fn_having = fn_having(value, agg_aliases)
 
-            #handle select
-            if str(key) =="select":
-                # Pass scalar_subqueries_where for qualification if needed (legacy behavior)
-                # Actually fn_select uses it to decide if it should qualify columns.
-                # We should probably pass both or just check if any exist.
-                all_scalar_subqs = scalar_subqueries_where + scalar_subqueries_having
-                v_fn_select = fn_select(value, outer_table_alias, all_scalar_subqs, agg_aliases)
+        #     #handle select
+        #     if str(key) =="select":
+        #         # # print(f"DEBUG: OUTSIDE fn_select: {value}")
+        #         # # print(f"DEBUG: OUTSIDE outer_table_alias: {outer_table_alias}")
+        #         # # print(f"DEBUG: OUTSIDE scalar_subqueries_where: {scalar_subqueries_where}")
+        #         # # print(f"DEBUG: OUTSIDE scalar_subqueries_having: {scalar_subqueries_having}")
+        #         # # print(f"DEBUG: OUTSIDE agg_aliases: {agg_aliases}")
+        #         # Pass scalar_subqueries_where for qualification if needed (legacy behavior)
+        #         # Actually fn_select uses it to decide if it should qualify columns.
+        #         # We should probably pass both or just check if any exist.
+        #         all_scalar_subqs = scalar_subqueries_where + scalar_subqueries_having
+        #         v_fn_select = fn_select(value, outer_table_alias, all_scalar_subqs, agg_aliases)
             
-            #handle select_distinct
-            if str(key) =="select_distinct":
-                all_scalar_subqs = scalar_subqueries_where + scalar_subqueries_having
-                v_fn_select = fn_select(value, outer_table_alias, all_scalar_subqs, agg_aliases)
-                v_fn_distinct = True
+        #     #handle select_distinct
+        #     if str(key) =="select_distinct":
+        #         all_scalar_subqs = scalar_subqueries_where + scalar_subqueries_having
+        #         v_fn_select = fn_select(value, outer_table_alias, all_scalar_subqs, agg_aliases)
+        #         v_fn_distinct = True
 
-            #handle sort
-            if str(key) =="orderby":
-                v_fn_orderby = fn_orderby(query) # Still using query for orderby? Check fn_orderby implementation
+        #     #handle sort
+        #     if str(key) =="orderby":
+        #         v_fn_orderby = fn_orderby(query) # Still using query for orderby? Check fn_orderby implementation
 
-            #handle limit
-            if str(key) =="limit":
-                v_fn_limit = fn_limit(query) # Still using query for limit?
+        #     #handle limit
+        #     if str(key) =="limit":
+        #         v_fn_limit = fn_limit(query) # Still using query for limit?
+
+        
+        # handle from
+        if "from" in data:
+            v_fn_from = fn_from(data["from"])
+
+        #handle where
+        if "where" in data:
+            v_fn_where = fn_where(data["where"])
+
+        #handle groupby
+        if "groupby" in data:
+            v_fn_groupby = fn_groupby(data["groupby"])
+
+        #handle agg - call if there's a groupby OR if there are aggregate functions (excluding windowed aggs)
+        if "groupby" in data or (("select" in data or "select_distinct" in data) and has_aggregate):
+            # FIX: pass data, not query
+            v_fn_agg, agg_aliases = fn_agg(data, agg_aliases)
+            # # print(f"DEBUG: v_fn_agg: {v_fn_agg}")
+            # # print(f"DEBUG: agg_aliases: {agg_aliases}")
+        
+        #handle having
+        if "having" in data:
+            v_fn_having = fn_having(data["having"], agg_aliases)
+
+        #handle select
+        if "select" in data:
+            # # print(f"DEBUG: OUTSIDE fn_select: {value}")
+            # # print(f"DEBUG: OUTSIDE outer_table_alias: {outer_table_alias}")
+            # # print(f"DEBUG: OUTSIDE scalar_subqueries_where: {scalar_subqueries_where}")
+            # # print(f"DEBUG: OUTSIDE scalar_subqueries_having: {scalar_subqueries_having}")
+            # # print(f"DEBUG: OUTSIDE agg_aliases: {agg_aliases}")
+            # Pass scalar_subqueries_where for qualification if needed (legacy behavior)
+            # Actually fn_select uses it to decide if it should qualify columns.
+            # We should probably pass both or just check if any exist.
+            all_scalar_subqs = scalar_subqueries_where + scalar_subqueries_having
+            v_fn_select = fn_select(data["select"], outer_table_alias, all_scalar_subqs, agg_aliases)
+        
+        #handle select_distinct
+        if "select_distinct" in data:
+            all_scalar_subqs = scalar_subqueries_where + scalar_subqueries_having
+            v_fn_select = fn_select(data["select_distinct"], outer_table_alias, all_scalar_subqs, agg_aliases)
+            v_fn_distinct = True
+
+        #handle sort
+        if "orderby" in data:
+            v_fn_orderby = fn_orderby(query) # Still using query for orderby? Check fn_orderby implementation
+
+        #handle limit
+        if "limit" in data:
+            v_fn_limit = fn_limit(query) # Still using query for limit?
 
         # Define helper to append scalar subquery joins
         def append_scalar_joins(stmt, subqs):
@@ -1643,56 +1870,98 @@ def translate_sql_to_pyspark(query: str) -> str:
         
         # Handle WHERE clause
         if v_fn_where:
-            if type(v_fn_where) is dict and v_fn_where.get('type') == 'in_subquery':
-                # Convert IN subquery to semi-join
+            # Handle new structure from fn_where: {'filters': str, 'subqueries': list}
+            if type(v_fn_where) is dict and 'subqueries' in v_fn_where:
+                # 1. Handle subquery joins (semi-joins for IN clause)
+                for subq_item in v_fn_where['subqueries']:
+                    if subq_item.get('type') == 'in_subquery':
+                        outer_column = subq_item['column']
+                        subquery_data = subq_item['subquery']
+                        
+                        # Extract the inner column from the subquery's SELECT
+                        inner_column = None
+                        if 'select' in subquery_data:
+                            select_data = subquery_data['select']
+                            if type(select_data) is dict:
+                                if 'value' in select_data:
+                                    inner_column = select_data['value']
+                                elif 'all_columns' in select_data:
+                                    # IN (SELECT *) usually implies SELECT * from single column or tuple
+                                    pass
+                            elif type(select_data) is list and len(select_data) > 0:
+                                if type(select_data[0]) is dict and 'value' in select_data[0]:
+                                    inner_column = select_data[0]['value']
+                        
+                        # Translate the subquery
+                        subquery_pyspark = fn_genSQL(subquery_data, agg_aliases)
+                        
+                        # Build semi-join with proper column references
+                        if inner_column:
+                            # Handle complex expressions in outer_column or inner_column
+                            # Use 'col()' wrapper unless it's already a complex expression string
+                            
+                            # Inner column logic
+                            if type(inner_column) is dict:
+                                inner_col_str = translate_value(inner_column)
+                            else:
+                                inner_col_str = f'col("{inner_column}")'
+                            
+                            # If outer_column is dict, translate it
+                            if type(outer_column) is dict:
+                                outer_col_str = translate_value(outer_column)
+                            else:
+                                outer_col_str = f'col("{outer_column}")' if "col(" not in str(outer_column) else str(outer_column)
+        
+                            v_final_stmt = v_final_stmt + f"\\\n.join(({subquery_pyspark}), {outer_col_str} == {inner_col_str}, 'semi')"
+                        else:
+                             # Fallback for when inner column is not found (e.g. SELECT *)
+                             # Check if subquery_data is simple table/CTE reference
+                             # 'select': {'value': 'col'}, 'from': 'cte'
+                             if 'select' in subquery_data and type(subquery_data['select']) is dict and 'value' in subquery_data['select']:
+                                 inner_col_val = subquery_data['select']['value']
+                                 inner_col_str = f'col("{inner_col_val}")'
+                                 
+                                 if type(outer_column) is dict:
+                                     outer_col_str = translate_value(outer_column)
+                                 else:
+                                     outer_col_str = f'col("{outer_column}")' if "col(" not in str(outer_column) else str(outer_column)
+                                     
+                                 v_final_stmt = v_final_stmt + f"\\\n.join(({subquery_pyspark}), {outer_col_str} == {inner_col_str}, 'semi')"
+                             else:
+                                 v_final_stmt = v_final_stmt + f"\\\n.filter(\"{outer_column} IN ({format(subquery_data)})\")"
+
+                # 2. Handle regular filters
+                if v_fn_where['filters']:
+                    filters = v_fn_where['filters']
+                    if "col(" in str(filters):
+                        v_final_stmt = v_final_stmt + "\\\n.filter("+filters+")"
+                    else:
+                        v_final_stmt = v_final_stmt + "\\\n.filter(\""+filters+"\")"
+            
+            # Legacy fallback (if fn_where somehow returns old format)
+            elif type(v_fn_where) is dict and v_fn_where.get('type') == 'in_subquery':
+                # Original logic for single IN subquery (retained for safety)
                 outer_column = v_fn_where['column']
                 subquery_data = v_fn_where['subquery']
-                
-                # Extract the inner column from the subquery's SELECT
                 inner_column = None
                 if 'select' in subquery_data:
                     select_data = subquery_data['select']
                     if type(select_data) is dict:
                         if 'value' in select_data:
                             inner_column = select_data['value']
-                        elif 'all_columns' in select_data:
-                            # IN (SELECT *) usually implies SELECT * from single column or tuple
-                            # But if inner_column is None, we fall back to SQL IN string which works
-                            pass
                     elif type(select_data) is list and len(select_data) > 0:
                         if type(select_data[0]) is dict and 'value' in select_data[0]:
                             inner_column = select_data[0]['value']
-                
-                # Translate the subquery
-                subquery_pyspark = fn_genSQL(subquery_data)
-                
-                # Build semi-join with proper column references
+                subquery_pyspark = fn_genSQL(subquery_data, agg_aliases)
                 if inner_column:
-                    # Handle complex expressions in outer_column or inner_column
-                    outer_col_expr = outer_column if "col(" in str(outer_column) else f'col("{outer_column}")'
-                    inner_col_expr = inner_column if "col(" in str(inner_column) else f'col("{inner_column}")'
-                    # But wait, outer_column coming from fn_where is raw from AST
-                    # It might be dict (expression). fn_where usually returns 'type': 'in_subquery', 'column': raw_col
-                    
-                    # If outer_column is dict, translate it
-                    if type(outer_column) is dict:
-                        outer_col_str = translate_value(outer_column)
-                    else:
-                        outer_col_str = f'col("{outer_column}")'
-                        
-                    # Inner column is from select list, usually a value
-                    if type(inner_column) is dict:
-                        inner_col_str = translate_value(inner_column)
-                    else:
-                        inner_col_str = f'col("{inner_column}")'
-
+                    inner_col_str = f'col("{inner_column}")'
+                    outer_col_str = f'col("{outer_column}")' if "col(" not in str(outer_column) else str(outer_column)
                     v_final_stmt = v_final_stmt + f"\\\n.join(({subquery_pyspark}), {outer_col_str} == {inner_col_str}, 'semi')"
                 else:
-                    # Fallback: use SQL IN syntax
-                    subquery_sql = format(subquery_data)
-                    v_final_stmt = v_final_stmt + f"\\\n.filter(\"{outer_column} IN ({subquery_sql})\")"
+                    v_final_stmt = v_final_stmt + f"\\\n.filter(\"{outer_column} IN ({format(subquery_data)})\")"
+
             else:
-                # Regular filter
+                # Regular filter string
                 if "col(" in str(v_fn_where):
                     v_final_stmt = v_final_stmt + "\\\n.filter("+v_fn_where+")"
                 else:
@@ -1739,11 +2008,11 @@ def translate_sql_to_pyspark(query: str) -> str:
                 return k
         return None
 
-    def fn_genSQL_or_set(obj):
+    def fn_genSQL_or_set(obj, agg_aliases=None):
         """Generate PySpark for either a regular SELECT dict or a set operation dict."""
         key = _find_set_op_key(obj)
         if not key:
-            return fn_genSQL(obj)
+            return fn_genSQL(obj, agg_aliases)
 
         parts = obj[key]
         if type(parts) is not list:
@@ -1779,9 +2048,27 @@ def translate_sql_to_pyspark(query: str) -> str:
         norm_key = key.replace('_', ' ').lower()
         return _fold(norm_key, translated_parts)
 
+    agg_aliases = {}
     # Handle CTEs (WITH clause) at the top level
     cte_code = ""
-    if "with" in v_json:
+    # Check for WITH in list form (if parser returned list of 1)
+    if type(v_json) is list:
+         # Check if any element has 'with'
+         for item in v_json:
+             if type(item) is dict and "with" in item:
+                 cte_block = item.pop("with")
+                 # Ensure list
+                 if type(cte_block) is not list:
+                     cte_block = [cte_block]
+                     
+                 for cte in cte_block:
+                     name = cte.get("name")
+                     value = cte.get("value")
+                     if name and value:
+                         # Recursively translate the CTE query
+                         cte_pyspark = fn_genSQL_or_set(value, agg_aliases)
+                         cte_code += f"{name} = {cte_pyspark}\n"
+    elif "with" in v_json:
         cte_block = v_json.pop("with")
         # Ensure list
         if type(cte_block) is not list:
@@ -1796,18 +2083,25 @@ def translate_sql_to_pyspark(query: str) -> str:
                 cte_code += f"{name} = {cte_pyspark}\n"
 
     # Translate the main query
+    if type(v_json) is list and len(v_json) == 1:
+        v_json = v_json[0]
+        
     main_query = fn_genSQL_or_set(v_json)
     return cte_code + main_query
 
 import sys
 if __name__ == "__main__":
     # if len(sys.argv) != 2:
-    #     print("Usage: python translator.py input.file")
+    #     # # print("Usage: python translator.py input.file")
+    queries_from_file = False
     if len(sys.argv) >= 2:
+        queries_from_file = True
         queries = []
+        file_names = []
         for i in range(1, len(sys.argv)):
             input_file = sys.argv[i]
             with open(input_file, 'r') as file:
+                file_names.append(input_file.split('/')[-1])
                 content = file.read()
             first_with = content.lower().find("with")
             first_select = content.lower().find("select")
@@ -1964,7 +2258,11 @@ LIMIT 100;
         """
     ]
 
-    for query in queries:
+    for i, query in enumerate(queries):
+        if queries_from_file:
+            print(f"Processing file: {file_names[i]}")
+        else:
+            print(f"Processing query: {i+1}")
         print(query)
         print(translate_sql_to_pyspark(query))
         print("-"*100)
