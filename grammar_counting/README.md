@@ -37,6 +37,6 @@ Assume that your cwd looks something like this:
 ## TODO
 ```
 $mkdir -p build
-$javac -d build -cp /usr/local/lib/antlr-4.13.2-complete.jar src/org/example/*.java src/TestSQLParse.java
-$java -cp build:/usr/local/lib/antlr-4.13.2-complete.jar TestSQLParse <your input file>
+$javac -d build -cp /usr/local/lib/antlr-4.13.2-complete.jar src/org/example/*.java src/CountSparkQLRules.java
+$java -cp build:/usr/local/lib/antlr-4.13.2-complete.jar CountSparkQLRules <your input file/directory>
 ```
