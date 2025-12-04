@@ -165,7 +165,7 @@ def translate_sql_to_pyspark(query: str) -> str:
         Translate a scalar subquery to PySpark using JOIN method.
         Returns a dict with aggregation DataFrame code and join information.
         """
-        # print(f'translating scalar subquery join: {subquery_dict}')
+        # print(f'DEBUG: translating subquery: {subquery_dict}')
         # Extract the aggregate function from SELECT
         select_data = subquery_dict.get('select') or subquery_dict.get('select_distinct')
         if not select_data:
@@ -185,12 +185,18 @@ def translate_sql_to_pyspark(query: str) -> str:
         
         if not agg_func:
             # Fallback for non-aggregate scalar subqueries (e.g. SELECT distinct col)
+            # OR for EXISTS subqueries (SELECT *)
             # Treat as first() which is appropriate for scalar single-row results
-            if type(select_data) is dict and 'value' in select_data:
-                 val = select_data['value']
+            if type(select_data) is dict:
+                 val = select_data.get('value')
                  if type(val) is str:
                      agg_func = 'first'
                      agg_column = val
+                     template_expr = "__AGG_PLACEHOLDER__"
+                 elif 'all_columns' in select_data:
+                     # Handle SELECT *
+                     agg_func = 'first'
+                     agg_column = '*'
                      template_expr = "__AGG_PLACEHOLDER__"
         
         if not agg_func:
@@ -237,15 +243,16 @@ def translate_sql_to_pyspark(query: str) -> str:
         
         # Get the FROM table
         from_table = subquery_dict.get('from')
-        if type(from_table) is dict and 'value' in from_table:
-            inner_table = from_table['value']
-            if type(inner_table) is dict:
-                # Recursively translate nested subquery
-                inner_table = f"({fn_genSQL_or_set(inner_table)})"
-            inner_alias = from_table.get('name', 'subq')
-        elif type(from_table) is str:
-            inner_table = from_table
-            inner_alias = 'subq'
+        inner_table = None
+        inner_alias = 'subq'
+        
+        if from_table:
+            # Use fn_from to handle string, dict, or list (implicit joins)
+            inner_table_str = fn_from(from_table)
+            # Wrap in parens to treat as a table expression
+            inner_table = f"({inner_table_str})"
+            if type(from_table) is dict and 'name' in from_table:
+                inner_alias = from_table['name']
         else:
             return None
         
@@ -253,30 +260,64 @@ def translate_sql_to_pyspark(query: str) -> str:
         where_clause = subquery_dict.get('where')
         correlation_column = None
         other_filters = []
+        outer_column = None
         
+        # Helper to check if a condition is a correlation
+        def check_correlation(left, right):
+            # Check if one side looks like an outer reference
+            left_str = str(left)
+            right_str = str(right)
+            
+            is_left_outer = False
+            is_right_outer = False
+            
+            # Check if using passed outer aliases
+            if type(outer_table_info) is list:
+                for alias in outer_table_info:
+                    if left_str.startswith(f"{alias}."):
+                        is_left_outer = True
+                        break
+                    if right_str.startswith(f"{alias}."):
+                        is_right_outer = True
+                        break
+            elif type(outer_table_info) is str:
+                # Single alias
+                if left_str.startswith(f"{outer_table_info}."):
+                    is_left_outer = True
+                if right_str.startswith(f"{outer_table_info}."):
+                    is_right_outer = True
+            
+            if is_left_outer and not is_right_outer:
+                # Left is outer, Right is inner
+                return left_str, right_str # (outer, inner)
+            elif is_right_outer and not is_left_outer:
+                # Right is outer, Left is inner
+                return right_str, left_str # (outer, inner)
+            elif '.' in left_str and '.' in right_str:
+                # Fallback: both qualified
+                # Check if one matches inner_alias (if we know it)
+                left_parts = left_str.split('.')
+                right_parts = right_str.split('.')
+                
+                # If we detected inner_alias from from clause
+                if left_parts[0] == inner_alias:
+                    return right_str, left_parts[1] if len(left_parts) > 1 else left_str
+                if right_parts[0] == inner_alias:
+                    return left_str, right_parts[1] if len(right_parts) > 1 else right_str
+            
+            return None, None
+
         if where_clause and type(where_clause) is dict:
             # Check for simple equality correlation
             if 'eq' in where_clause:
                 operands = where_clause['eq']
                 if type(operands) is list and len(operands) == 2:
-                    left, right = operands[0], operands[1]
-                    # Find which one is the correlation
-                    if type(left) is str and type(right) is str:
-                        if '.' in left and '.' in right:
-                            # Both qualified - this is the correlation
-                            # Parse to find inner table column
-                            left_parts = left.split('.')
-                            right_parts = right.split('.')
-                            
-                            # Determine which is inner, which is outer
-                            if left_parts[0] == inner_alias or left_parts[0] == inner_table:
-                                correlation_column = left_parts[1] if len(left_parts) > 1 else left
-                                # Keep the full outer column reference (including alias) to avoid ambiguity in join
-                                outer_column = right
-                            else:
-                                correlation_column = right_parts[1] if len(right_parts) > 1 else right
-                                # Keep the full outer column reference (including alias) to avoid ambiguity in join
-                                outer_column = left
+                    o_col, i_col = check_correlation(operands[0], operands[1])
+                    if o_col and i_col:
+                        outer_column = o_col
+                        correlation_column = i_col
+                    else:
+                        other_filters.append(where_clause)
             
             # Handle AND conditions with multiple filters
             elif 'and' in where_clause:
@@ -286,24 +327,17 @@ def translate_sql_to_pyspark(query: str) -> str:
                         if type(cond) is dict and 'eq' in cond:
                             operands = cond['eq']
                             if type(operands) is list and len(operands) == 2:
-                                left, right = operands[0], operands[1]
-                                if '.' in str(left) and '.' in str(right):
-                                    # This is likely the correlation
-                                    left_parts = str(left).split('.')
-                                    right_parts = str(right).split('.')
-                                    if left_parts[0] == inner_alias:
-                                        correlation_column = left_parts[1] if len(left_parts) > 1 else left
-                                        # Keep the full outer column reference (including alias) to avoid ambiguity in join
-                                        outer_column = right
-                                    else:
-                                        correlation_column = right_parts[1] if len(right_parts) > 1 else right
-                                        # Keep the full outer column reference (including alias) to avoid ambiguity in join
-                                        outer_column = left
+                                o_col, i_col = check_correlation(operands[0], operands[1])
+                                if o_col and i_col:
+                                    # Found correlation
+                                    outer_column = o_col
+                                    correlation_column = i_col
                                 else:
-                                    # Other filter condition
                                     other_filters.append(cond)
                         else:
                             other_filters.append(cond)
+            else:
+                other_filters.append(where_clause)
         
         # Build the aggregation code
         result = {
@@ -352,12 +386,15 @@ def translate_sql_to_pyspark(query: str) -> str:
         
         # Helper to format literal values for APIs like between/isin/like (no col()/lit())
         def to_python_literal(val):
-            if type(val) is dict and 'literal' in val:
-                lit_val = val['literal']
-                if type(lit_val) is str:
-                    return f"'" + lit_val.replace("'", "\\'") + "'"
-                else:
-                    return str(lit_val)
+            if type(val) is dict:
+                if 'literal' in val:
+                    lit_val = val['literal']
+                    if type(lit_val) is str:
+                        return f"'" + lit_val.replace("'", "\\'") + "'"
+                    else:
+                        return str(lit_val)
+                # Handle complex expressions (e.g. arithmetic, functions)
+                return translate_value(val)
             elif type(val) is str:
                 return f"'" + val.replace("'", "\\'") + "'"
             elif type(val) in (int, float):
@@ -1055,11 +1092,8 @@ def translate_sql_to_pyspark(query: str) -> str:
         has_scalar_subqueries = scalar_subq_list is not None and len(scalar_subq_list) > 0
         
         if type(value) is str:
-            # Simple column - qualify if we have outer alias and scalar subqueries
-            if has_outer_alias and has_scalar_subqueries:
-                result_select = result_select + f'col("{outer_alias}.{value}"),'
-            else:
-                result_select = result_select + "\""+value+"\","
+            # Simple column - do NOT auto-qualify, user input should be respected
+            result_select = result_select + "\""+value+"\","
         elif type(value) is dict:
             # Handle SELECT * case
             if "all_columns" in value.keys():
@@ -1082,11 +1116,8 @@ def translate_sql_to_pyspark(query: str) -> str:
                         func_str = func_str + f".over({build_window_spec(value['over'])})"
                     result_select = result_select + func_str + ".alias(\""+value['name']+"\"),"
                 else:
-                    # Regular column with alias - qualify if we have outer alias and scalar subqueries
-                    if has_outer_alias and has_scalar_subqueries and not '.' in str(value['value']):
-                        result_select = result_select + f'col("{outer_alias}.{value["value"]}").alias("{value["name"]}"),'
-                    else:
-                        result_select = result_select + f'col("{value["value"]}").alias("{value["name"]}"),'
+                    # Regular column with alias
+                    result_select = result_select + f'col("{value["value"]}").alias("{value["name"]}"),'
             elif "value" in value.keys() and type(value['value']) is dict:
                 if is_aggregate_function(value['value']) and not is_window_expression(value):
                     # Aggregate function - skip, handled by fn_agg
@@ -1175,38 +1206,16 @@ def translate_sql_to_pyspark(query: str) -> str:
                     else:
                         # Regular column or function
                         if "name" in item_select.keys():
-                            # Column with alias - qualify if we have outer alias and scalar subqueries
-                            if has_outer_alias and has_scalar_subqueries and not '.' in str(item_select['value']):
-                                # Handle function-with-over at parent level (rare structure)
-                                if 'over' in item_select and type(item_select['value']) is dict:
-                                    func_str = translate_function(item_select['value'])
-                                    func_str = func_str + f".over({build_window_spec(item_select['over'])})"
-                                    result_select = result_select + func_str + f'.alias("{item_select["name"]}"),'
-                                else:
-                                    result_select = result_select + f'col("{outer_alias}.{item_select["value"]}").alias("{item_select["name"]}"),'
-                            else:
-                                if 'over' in item_select and type(item_select['value']) is dict:
-                                    func_str = translate_function(item_select['value'])
-                                    func_str = func_str + f".over({build_window_spec(item_select['over'])})"
-                                    result_select = result_select + func_str + f'.alias("{item_select["name"]}"),'
-                                else:
-                                    result_select = result_select + f'col("{item_select["value"]}").alias("{item_select["name"]}"),'
+                            # Column with alias
+                            result_select = result_select + f'col("{item_select["value"]}").alias("{item_select["name"]}"),'
                         else:
-                            # Column without alias - qualify if we have outer alias and scalar subqueries
-                            if has_outer_alias and has_scalar_subqueries and not '.' in str(item_select['value']):
-                                if 'over' in item_select and type(item_select['value']) is dict:
-                                    func_str = translate_function(item_select['value'])
-                                    func_str = func_str + f".over({build_window_spec(item_select['over'])})"
-                                    result_select = result_select + func_str + ","
-                                else:
-                                    result_select = result_select + f'col("{outer_alias}.{item_select["value"]}"),'
+                            # Column without alias
+                            if 'over' in item_select and type(item_select['value']) is dict:
+                                func_str = translate_function(item_select['value'])
+                                func_str = func_str + f".over({build_window_spec(item_select['over'])})"
+                                result_select = result_select + func_str + ","
                             else:
-                                if 'over' in item_select and type(item_select['value']) is dict:
-                                    func_str = translate_function(item_select['value'])
-                                    func_str = func_str + f".over({build_window_spec(item_select['over'])})"
-                                    result_select = result_select + func_str + ","
-                                else:
-                                    result_select = result_select + "\""+item_select['value']+"\"," 
+                                result_select = result_select + "\""+item_select['value']+"\"," 
         return result_select[:-1] if result_select.endswith(",") else result_select
 
     def fn_where(value):
@@ -1409,96 +1418,106 @@ def translate_sql_to_pyspark(query: str) -> str:
         scalar_subqueries_where = []  # Subqueries to join before WHERE
         scalar_subqueries_having = [] # Subqueries to join after AGGREGATION (before HAVING)
         use_spark_sql_fallback = False
-        outer_table_alias = None  # Track the outer table alias for column qualification
+        outer_table_aliases = []  # List of all outer table aliases
+        outer_table_alias = None  # Single primary alias (legacy)
         agg_aliases = {}  # Store aggregate function aliases for HAVING clause
         
-        # Extract outer table alias FIRST
+        # Extract outer table aliases
         if "from" in data:
             from_value = data["from"]
-            if type(from_value) is dict and 'name' in from_value:
-                outer_table_alias = from_value['name']
+            if type(from_value) is dict:
+                if 'name' in from_value:
+                    outer_table_alias = from_value['name']
+                    outer_table_aliases.append(from_value['name'])
+                elif 'value' in from_value:
+                    # If single table without alias, maybe table name is alias?
+                    pass 
             elif type(from_value) is str:
-                outer_table_alias = None
+                # Table name itself might be used for qualification, but aliases are preferred
+                pass
+            elif type(from_value) is list:
+                # Multiple tables
+                for item in from_value:
+                    if type(item) is dict and 'name' in item:
+                        outer_table_aliases.append(item['name'])
+                # If list, outer_table_alias (single) is ambiguous/first one?
+                if outer_table_aliases:
+                    outer_table_alias = outer_table_aliases[0]
         
-        # First pass: detect scalar subqueries in SELECT and check nesting depth
-        select_value = data.get("select") or data.get("select_distinct")
-        if select_value:
-            select_items = [select_value] if type(select_value) is dict else select_value
+        # Helper to process scalar subqueries in expressions (SELECT/WHERE/HAVING)
+        def process_subqueries(expr, scalar_subqs):
+            if type(expr) is list:
+                return [process_subqueries(i, scalar_subqs) for i in expr]
             
-            for item in select_items:
-                if type(item) is dict and "value" in item:
-                    value = item["value"]
-                    
-                    # Check if this is a scalar subquery
-                    if type(value) is dict and ('select' in value or 'select_distinct' in value):
-                        # This is a scalar subquery
-                        nesting_depth = calculate_nesting_depth(value)
-                        alias_name = item.get('name', 'subquery_result')
-                        
-                        # Check nesting depth for fallback decision
-                        if nesting_depth >= 10:
-                            # Too complex - use spark.sql fallback
-                            use_spark_sql_fallback = True
-                            break
-                        else:
-                            # Try JOIN method - treated as WHERE-scope (joined before aggregation)
-                            # unless we want to support scalar subqueries in SELECT that depend on aggregation?
-                            # Standard SQL scalar subqueries in SELECT are usually independent or correlated to row.
-                            subq_info = translate_scalar_subquery_join(value, alias_name, outer_table_alias)
-                            if subq_info:
-                                scalar_subqueries_where.append(subq_info)
-                            else:
-                                # Couldn't translate - mark for fallback
-                                use_spark_sql_fallback = True
-                                break
-                    
-                    # Check for regular aggregate functions
-                    if is_aggregate_function(value):
-                        has_aggregate = True
-        
-        # Helper to process scalar subqueries in conditions (WHERE/HAVING)
-        def process_where_subqueries(expr, scalar_subqs):
             if type(expr) is not dict:
                 return expr
             
-            # Check if this node IS a subquery
+            # Check if this node IS a subquery (or EXISTS subquery)
             if 'select' in expr or 'select_distinct' in expr:
                  alias_name = f"subq_{len(scalar_subqs)}_{id(expr) % 1000}"
-                 subq_info = translate_scalar_subquery_join(expr, alias_name, outer_table_alias)
+                 # Pass list of outer aliases for better correlation detection
+                 subq_info = translate_scalar_subquery_join(expr, alias_name, outer_table_aliases)
                  if subq_info:
                      scalar_subqs.append(subq_info)
                      agg_alias = f"{alias_name}_agg"
                      # Return the column reference that will be valid after join
                      return f"{agg_alias}.{alias_name}"
                  return expr
+                 
+            # Check for EXISTS subquery - usually {'exists': {select...}}
+            if 'exists' in expr and type(expr['exists']) is dict and ('select' in expr['exists'] or 'select_distinct' in expr['exists']):
+                 # This is an EXISTS subquery.
+                 # We translate it similarly to a scalar subquery, but we want to check for existence (non-null).
+                 subquery = expr['exists']
+                 alias_name = f"exists_{len(scalar_subqs)}_{id(subquery) % 1000}"
+                 subq_info = translate_scalar_subquery_join(subquery, alias_name, outer_table_aliases)
+                 if subq_info:
+                     scalar_subqs.append(subq_info)
+                     agg_alias = f"{alias_name}_agg"
+                     # Return PySpark boolean expression string
+                     return f"col('{agg_alias}.{alias_name}').isNotNull()"
+                 else:
+                     #  print(f"DEBUG: Failed to translate EXISTS subquery: {subquery}")
+                     pass
+                 return expr
 
             # Recurse
             new_expr = {}
             for k, v in expr.items():
-                # Skip recursion for IN/EXISTS/NOT IN subqueries - they are handled separately
-                if k in ['in', 'nin', 'not in', 'exists']:
+                # Skip recursion for IN/NOT IN subqueries - they are handled separately in WHERE
+                # We do NOT skip 'exists' anymore to support EXISTS subqueries via join
+                
+                if k in ['in', 'nin', 'not in']:
+                    # Check if 'in' value is subquery - handled by fn_where logic
                     new_expr[k] = v
                     continue
                 
                 if type(v) is list:
-                    new_expr[k] = [process_where_subqueries(i, scalar_subqs) for i in v]
+                    new_expr[k] = [process_subqueries(i, scalar_subqs) for i in v]
                 elif type(v) is dict:
-                    new_expr[k] = process_where_subqueries(v, scalar_subqs)
+                    new_expr[k] = process_subqueries(v, scalar_subqs)
                 else:
                     new_expr[k] = v
             return new_expr
+
+        # First pass: Recursively process scalar subqueries in SELECT clause
+        # This handles subqueries nested in CASE, functions, etc.
+        if "select" in data:
+            data['select'] = process_subqueries(data['select'], scalar_subqueries_where)
+        if "select_distinct" in data:
+            data['select_distinct'] = process_subqueries(data['select_distinct'], scalar_subqueries_where)
 
         # Process scalar subqueries in WHERE clause
         if "where" in data:
             where_val = data["where"]
             # Process and update the WHERE clause in data
-            data['where'] = process_where_subqueries(where_val, scalar_subqueries_where)
+            data['where'] = process_subqueries(where_val, scalar_subqueries_where)
 
         # Process scalar subqueries in HAVING clause
         if "having" in data:
             having_val = data["having"]
             # Use separate list for HAVING subqueries
-            data['having'] = process_where_subqueries(having_val, scalar_subqueries_having)
+            data['having'] = process_subqueries(having_val, scalar_subqueries_having)
         
         # If fallback is needed, return spark.sql() wrapper
         if use_spark_sql_fallback:
@@ -1506,6 +1525,8 @@ def translate_sql_to_pyspark(query: str) -> str:
             return f'spark.sql("""{sql_query}""")'
         
         # Check if SELECT has aggregate functions (not just any function). Skip window expressions.
+        # Note: after process_subqueries, subqueries are replaced by strings.
+        # We need to check for aggregates in the modified structure.
         select_value = data.get("select") or data.get("select_distinct")
         if select_value:
             if type(select_value) is dict and "value" in select_value:
@@ -1631,8 +1652,13 @@ def translate_sql_to_pyspark(query: str) -> str:
                 inner_column = None
                 if 'select' in subquery_data:
                     select_data = subquery_data['select']
-                    if type(select_data) is dict and 'value' in select_data:
-                        inner_column = select_data['value']
+                    if type(select_data) is dict:
+                        if 'value' in select_data:
+                            inner_column = select_data['value']
+                        elif 'all_columns' in select_data:
+                            # IN (SELECT *) usually implies SELECT * from single column or tuple
+                            # But if inner_column is None, we fall back to SQL IN string which works
+                            pass
                     elif type(select_data) is list and len(select_data) > 0:
                         if type(select_data[0]) is dict and 'value' in select_data[0]:
                             inner_column = select_data[0]['value']
@@ -1642,14 +1668,32 @@ def translate_sql_to_pyspark(query: str) -> str:
                 
                 # Build semi-join with proper column references
                 if inner_column:
-                    v_final_stmt = v_final_stmt + f"\\\n.join(({subquery_pyspark}), col(\"{outer_column}\") == col(\"{inner_column}\"), 'semi')"
+                    # Handle complex expressions in outer_column or inner_column
+                    outer_col_expr = outer_column if "col(" in str(outer_column) else f'col("{outer_column}")'
+                    inner_col_expr = inner_column if "col(" in str(inner_column) else f'col("{inner_column}")'
+                    # But wait, outer_column coming from fn_where is raw from AST
+                    # It might be dict (expression). fn_where usually returns 'type': 'in_subquery', 'column': raw_col
+                    
+                    # If outer_column is dict, translate it
+                    if type(outer_column) is dict:
+                        outer_col_str = translate_value(outer_column)
+                    else:
+                        outer_col_str = f'col("{outer_column}")'
+                        
+                    # Inner column is from select list, usually a value
+                    if type(inner_column) is dict:
+                        inner_col_str = translate_value(inner_column)
+                    else:
+                        inner_col_str = f'col("{inner_column}")'
+
+                    v_final_stmt = v_final_stmt + f"\\\n.join(({subquery_pyspark}), {outer_col_str} == {inner_col_str}, 'semi')"
                 else:
                     # Fallback: use SQL IN syntax
                     subquery_sql = format(subquery_data)
                     v_final_stmt = v_final_stmt + f"\\\n.filter(\"{outer_column} IN ({subquery_sql})\")"
             else:
                 # Regular filter
-                if "col(" in v_fn_where:
+                if "col(" in str(v_fn_where):
                     v_final_stmt = v_final_stmt + "\\\n.filter("+v_fn_where+")"
                 else:
                     v_final_stmt = v_final_stmt + "\\\n.filter(\""+v_fn_where+"\")"
@@ -1811,93 +1855,93 @@ if __name__ == "__main__":
         # "SELECT id FROM table1 UNION SELECT id FROM table2",
         # "SELECT name FROM table1 INTERSECT SELECT name FROM table2",
         # "SELECT name FROM table1 EXCEPT SELECT name FROM table2",
-#         "SELECT name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC) FROM employees",
-#         "SELECT id, SUM(sales) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM transactions",
-#         "SELECT SUM(sales) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM transactions",
-#         "SELECT employee_name, salary FROM employees ORDER BY (salary - AVG(salary) OVER (PARTITION BY department)) DESC",
-#         """
-#         with customer_total_return as
-# (select sr_customer_sk as ctr_customer_sk
-# ,sr_store_sk as ctr_store_sk
-# ,sum(SR_FEE) as ctr_total_return
-# from store_returns
-# ,date_dim
-# where sr_returned_date_sk = d_date_sk
-# and d_year =2000
-# group by sr_customer_sk
-# ,sr_store_sk)
-#  select  c_customer_id
-# from customer_total_return ctr1
-# ,store
-# ,customer
-# where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2
-# from customer_total_return ctr2
-# where ctr1.ctr_store_sk = ctr2.ctr_store_sk)
-# and s_store_sk = ctr1.ctr_store_sk
-# and s_state = 'TN'
-# and ctr1.ctr_customer_sk = c_customer_sk
-# order by c_customer_id
-# LIMIT 100;
-#         """,
-#         """
-#         with wscs as
-#  (select sold_date_sk
-#         ,sales_price
-#   from (select ws_sold_date_sk sold_date_sk
-#               ,ws_ext_sales_price sales_price
-#         from web_sales 
-#         union all
-#         select cs_sold_date_sk sold_date_sk
-#               ,cs_ext_sales_price sales_price
-#         from catalog_sales)),
-#  wswscs as 
-#  (select d_week_seq,
-#         sum(case when (d_day_name='Sunday') then sales_price else null end) sun_sales,
-#         sum(case when (d_day_name='Monday') then sales_price else null end) mon_sales,
-#         sum(case when (d_day_name='Tuesday') then sales_price else  null end) tue_sales,
-#         sum(case when (d_day_name='Wednesday') then sales_price else null end) wed_sales,
-#         sum(case when (d_day_name='Thursday') then sales_price else null end) thu_sales,
-#         sum(case when (d_day_name='Friday') then sales_price else null end) fri_sales,
-#         sum(case when (d_day_name='Saturday') then sales_price else null end) sat_sales
-#  from wscs
-#      ,date_dim
-#  where d_date_sk = sold_date_sk
-#  group by d_week_seq)
-#  select d_week_seq1
-#        ,round(sun_sales1/sun_sales2,2)
-#        ,round(mon_sales1/mon_sales2,2)
-#        ,round(tue_sales1/tue_sales2,2)
-#        ,round(wed_sales1/wed_sales2,2)
-#        ,round(thu_sales1/thu_sales2,2)
-#        ,round(fri_sales1/fri_sales2,2)
-#        ,round(sat_sales1/sat_sales2,2)
-#  from
-#  (select wswscs.d_week_seq d_week_seq1
-#         ,sun_sales sun_sales1
-#         ,mon_sales mon_sales1
-#         ,tue_sales tue_sales1
-#         ,wed_sales wed_sales1
-#         ,thu_sales thu_sales1
-#         ,fri_sales fri_sales1
-#         ,sat_sales sat_sales1
-#   from wswscs,date_dim 
-#   where date_dim.d_week_seq = wswscs.d_week_seq and
-#         d_year = 2001) y,
-#  (select wswscs.d_week_seq d_week_seq2
-#         ,sun_sales sun_sales2
-#         ,mon_sales mon_sales2
-#         ,tue_sales tue_sales2
-#         ,wed_sales wed_sales2
-#         ,thu_sales thu_sales2
-#         ,fri_sales fri_sales2
-#         ,sat_sales sat_sales2
-#   from wswscs
-#       ,date_dim 
-#   where date_dim.d_week_seq = wswscs.d_week_seq and
-#         d_year = 2001+1) z
-#  where d_week_seq1=d_week_seq2-53
-#  order by d_week_seq1;
-#         """,
+        # "SELECT name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC) FROM employees",
+        # "SELECT id, SUM(sales) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM transactions",
+        # "SELECT SUM(sales) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM transactions",
+        # "SELECT employee_name, salary FROM employees ORDER BY (salary - AVG(salary) OVER (PARTITION BY department)) DESC",
+        # """
+        # with customer_total_return as
+        # (select sr_customer_sk as ctr_customer_sk
+        # ,sr_store_sk as ctr_store_sk
+        # ,sum(SR_FEE) as ctr_total_return
+        # from store_returns
+        # ,date_dim
+        # where sr_returned_date_sk = d_date_sk
+        # and d_year =2000
+        # group by sr_customer_sk
+        # ,sr_store_sk)
+        #  select  c_customer_id
+        # from customer_total_return ctr1
+        # ,store
+        # ,customer
+        # where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2
+        # from customer_total_return ctr2
+        # where ctr1.ctr_store_sk = ctr2.ctr_store_sk)
+        # and s_store_sk = ctr1.ctr_store_sk
+        # and s_state = 'TN'
+        # and ctr1.ctr_customer_sk = c_customer_sk
+        # order by c_customer_id
+        # LIMIT 100;
+        # """,
+        # """
+        # with wscs as
+        #  (select sold_date_sk
+        #         ,sales_price
+        #   from (select ws_sold_date_sk sold_date_sk
+        #               ,ws_ext_sales_price sales_price
+        #         from web_sales 
+        #         union all
+        #         select cs_sold_date_sk sold_date_sk
+        #               ,cs_ext_sales_price sales_price
+        #         from catalog_sales)),
+        #  wswscs as 
+        #  (select d_week_seq,
+        #         sum(case when (d_day_name='Sunday') then sales_price else null end) sun_sales,
+        #         sum(case when (d_day_name='Monday') then sales_price else null end) mon_sales,
+        #         sum(case when (d_day_name='Tuesday') then sales_price else  null end) tue_sales,
+        #         sum(case when (d_day_name='Wednesday') then sales_price else null end) wed_sales,
+        #         sum(case when (d_day_name='Thursday') then sales_price else null end) thu_sales,
+        #         sum(case when (d_day_name='Friday') then sales_price else null end) fri_sales,
+        #         sum(case when (d_day_name='Saturday') then sales_price else null end) sat_sales
+        #  from wscs
+        #      ,date_dim
+        #  where d_date_sk = sold_date_sk
+        #  group by d_week_seq)
+        #  select d_week_seq1
+        #        ,round(sun_sales1/sun_sales2,2)
+        #        ,round(mon_sales1/mon_sales2,2)
+        #        ,round(tue_sales1/tue_sales2,2)
+        #        ,round(wed_sales1/wed_sales2,2)
+        #        ,round(thu_sales1/thu_sales2,2)
+        #        ,round(fri_sales1/fri_sales2,2)
+        #        ,round(sat_sales1/sat_sales2,2)
+        #  from
+        #  (select wswscs.d_week_seq d_week_seq1
+        #         ,sun_sales sun_sales1
+        #         ,mon_sales mon_sales1
+        #         ,tue_sales tue_sales1
+        #         ,wed_sales wed_sales1
+        #         ,thu_sales thu_sales1
+        #         ,fri_sales fri_sales1
+        #         ,sat_sales sat_sales1
+        #   from wswscs,date_dim 
+        #   where date_dim.d_week_seq = wswscs.d_week_seq and
+        #         d_year = 2001) y,
+        #  (select wswscs.d_week_seq d_week_seq2
+        #         ,sun_sales sun_sales2
+        #         ,mon_sales mon_sales2
+        #         ,tue_sales tue_sales2
+        #         ,wed_sales wed_sales2
+        #         ,thu_sales thu_sales2
+        #         ,fri_sales fri_sales2
+        #         ,sat_sales sat_sales2
+        #   from wswscs
+        #       ,date_dim 
+        #   where date_dim.d_week_seq = wswscs.d_week_seq and
+        #         d_year = 2001+1) z
+        #  where d_week_seq1=d_week_seq2-53
+        #  order by d_week_seq1;
+        #         """,
             """
 select  dt.d_year 
        ,item.i_brand_id brand_id 
