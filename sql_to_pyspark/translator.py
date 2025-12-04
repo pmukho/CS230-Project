@@ -23,6 +23,7 @@ def translate_sql_to_pyspark(query: str) -> str:
     SPECIAL_FUNCTION_MAPPING = {
         "date_add": "dateadd",
         "str_to_date": "to_date",
+        "substr": "substring",
     }
     
     def is_aggregate_function(value_dict):
@@ -158,7 +159,7 @@ def translate_sql_to_pyspark(query: str) -> str:
             return None
         
         return None
-
+    
     def translate_scalar_subquery_join(subquery_dict, alias_name, outer_table_info):
         """
         Translate a scalar subquery to PySpark using JOIN method.
@@ -191,9 +192,9 @@ def translate_sql_to_pyspark(query: str) -> str:
                      agg_func = 'first'
                      agg_column = val
                      template_expr = "__AGG_PLACEHOLDER__"
-            
-            if not agg_func:
-                return None
+        
+        if not agg_func:
+            return None
         
         # Helper to rebuild expression string from template
         def rebuild_expr(tmpl, inner_agg_str):
@@ -233,7 +234,7 @@ def translate_sql_to_pyspark(query: str) -> str:
             base_agg = f'{agg_func}(col("{agg_column}"))'
             
         full_agg_expr = rebuild_expr(template_expr, base_agg)
-
+        
         # Get the FROM table
         from_table = subquery_dict.get('from')
         if type(from_table) is dict and 'value' in from_table:
@@ -270,10 +271,12 @@ def translate_sql_to_pyspark(query: str) -> str:
                             # Determine which is inner, which is outer
                             if left_parts[0] == inner_alias or left_parts[0] == inner_table:
                                 correlation_column = left_parts[1] if len(left_parts) > 1 else left
-                                outer_column = right_parts[1] if len(right_parts) > 1 else right
+                                # Keep the full outer column reference (including alias) to avoid ambiguity in join
+                                outer_column = right
                             else:
                                 correlation_column = right_parts[1] if len(right_parts) > 1 else right
-                                outer_column = left_parts[1] if len(left_parts) > 1 else left
+                                # Keep the full outer column reference (including alias) to avoid ambiguity in join
+                                outer_column = left
             
             # Handle AND conditions with multiple filters
             elif 'and' in where_clause:
@@ -290,10 +293,12 @@ def translate_sql_to_pyspark(query: str) -> str:
                                     right_parts = str(right).split('.')
                                     if left_parts[0] == inner_alias:
                                         correlation_column = left_parts[1] if len(left_parts) > 1 else left
-                                        outer_column = right_parts[1] if len(right_parts) > 1 else right
+                                        # Keep the full outer column reference (including alias) to avoid ambiguity in join
+                                        outer_column = right
                                     else:
                                         correlation_column = right_parts[1] if len(right_parts) > 1 else right
-                                        outer_column = left_parts[1] if len(left_parts) > 1 else left
+                                        # Keep the full outer column reference (including alias) to avoid ambiguity in join
+                                        outer_column = left
                                 else:
                                     # Other filter condition
                                     other_filters.append(cond)
@@ -413,18 +418,57 @@ def translate_sql_to_pyspark(query: str) -> str:
         # IN / NOT IN with list (not subquery)
         if 'in' in cond_dict:
             in_val = cond_dict['in']
-            if type(in_val) is list and len(in_val) == 2 and type(in_val[1]) is list:
-                column, values = in_val[0], in_val[1]
-                left_str = f'col("{column}")' if type(column) is str else str(column)
-                items = ", ".join(to_python_literal(v) for v in values)
-                return f"{left_str}.isin([{items}])"
+            if type(in_val) is list and len(in_val) == 2:
+                column = in_val[0]
+                values_container = in_val[1]
+                
+                values = []
+                if type(values_container) is list:
+                    values = values_container
+                elif type(values_container) is dict and 'literal' in values_container:
+                    lit_val = values_container['literal']
+                    if type(lit_val) is list:
+                        values = lit_val
+                    else:
+                        values = [lit_val]
+                
+                # Only proceed if we found a list of values (not a subquery)
+                # Subqueries are dicts with 'select' usually, which fall through here
+                if values:
+                    # Handle complex expression on LHS
+                    if type(column) is dict:
+                        left_str = translate_value(column)
+                    else:
+                        left_str = f'col("{column}")' if type(column) is str else str(column)
+                    
+                    items = ", ".join(to_python_literal(v) for v in values)
+                    return f"{left_str}.isin([{items}])"
+
         if 'nin' in cond_dict or 'not in' in cond_dict:
             nin_val = cond_dict.get('nin', cond_dict.get('not in'))
-            if type(nin_val) is list and len(nin_val) == 2 and type(nin_val[1]) is list:
-                column, values = nin_val[0], nin_val[1]
-                left_str = f'col("{column}")' if type(column) is str else str(column)
-                items = ", ".join(to_python_literal(v) for v in values)
-                return f"~({left_str}.isin([{items}]))"
+            if type(nin_val) is list and len(nin_val) == 2:
+                column = nin_val[0]
+                values_container = nin_val[1]
+                
+                values = []
+                if type(values_container) is list:
+                    values = values_container
+                elif type(values_container) is dict and 'literal' in values_container:
+                    lit_val = values_container['literal']
+                    if type(lit_val) is list:
+                        values = lit_val
+                    else:
+                        values = [lit_val]
+                
+                if values:
+                    # Handle complex expression on LHS
+                    if type(column) is dict:
+                        left_str = translate_value(column)
+                    else:
+                        left_str = f'col("{column}")' if type(column) is str else str(column)
+                    
+                    items = ", ".join(to_python_literal(v) for v in values)
+                    return f"~({left_str}.isin([{items}]))"
         
         # LIKE / NOT LIKE -> startswith/endswith/contains when possible
         def translate_like(col_expr, pattern):
@@ -781,7 +825,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                 return f"lit('{lit_val}')"
             else:
                 return f"lit({lit_val})"
-
+        
         # Get the function name and arguments
         func_name = list(func_dict.keys())[0]
         func_args = func_dict[func_name]
@@ -830,7 +874,8 @@ def translate_sql_to_pyspark(query: str) -> str:
                     # Distinguish between column names and string literals
                     # If string contains spaces, special chars, or is very short (like ' '), treat as literal
                     # Otherwise treat as column
-                    if ' ' in arg or len(arg.strip()) == 0 or not arg.replace('_', '').isalnum():
+                    # Allow dots in column names (e.g. table.column)
+                    if ' ' in arg or len(arg.strip()) == 0 or not arg.replace('_', '').replace('.', '').isalnum():
                         # String literal
                         arg_strs.append(f"lit('{arg}')")
                     else:
@@ -1281,7 +1326,7 @@ def translate_sql_to_pyspark(query: str) -> str:
         
         if "select" not in data and "select_distinct" not in data:
             return "", {}
-
+        
         # Handle both single (dict) and multiple (list) select items
         select_items = data.get("select") or data.get("select_distinct")
         if type(select_items) is dict:
@@ -1454,7 +1499,7 @@ def translate_sql_to_pyspark(query: str) -> str:
             having_val = data["having"]
             # Use separate list for HAVING subqueries
             data['having'] = process_where_subqueries(having_val, scalar_subqueries_having)
-
+        
         # If fallback is needed, return spark.sql() wrapper
         if use_spark_sql_fallback:
             sql_query = format(data)
@@ -1554,7 +1599,7 @@ def translate_sql_to_pyspark(query: str) -> str:
                     func = subq_info['agg_func']
                     col_name = subq_info['agg_column']
                     agg_expr_str = f'{func}(col("{col_name}"))' if col_name != "*" else f'{func}(lit(1))'
-                
+            
                 # Build the join
                 agg_alias = f"{alias_name}_agg"
                 
@@ -1712,26 +1757,28 @@ def translate_sql_to_pyspark(query: str) -> str:
 
 import sys
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python translator.py input.file")
-    if len(sys.argv) == 2:
-        input_file = sys.argv[1]
-        with open(input_file, 'r') as file:
-            content = file.read()
-        first_with = content.lower().find("with")
-        first_select = content.lower().find("select")
-        if first_with == -1 and first_select == -1:
-            raise ValueError("No with or select found in the file")
-        if first_with != -1 and first_select != -1:
-            if first_with < first_select:
-                queries = [content[first_with:]]
+    # if len(sys.argv) != 2:
+    #     print("Usage: python translator.py input.file")
+    if len(sys.argv) >= 2:
+        queries = []
+        for i in range(1, len(sys.argv)):
+            input_file = sys.argv[i]
+            with open(input_file, 'r') as file:
+                content = file.read()
+            first_with = content.lower().find("with")
+            first_select = content.lower().find("select")
+            if first_with == -1 and first_select == -1:
+                raise ValueError("No with or select found in the file")
+            if first_with != -1 and first_select != -1:
+                if first_with < first_select:
+                    queries.append(content[first_with:])
+                else:
+                    queries.append(content[first_select:])
             else:
-                queries = [content[first_select:]]
-        else:
-            if first_with != -1:
-                queries = [content[first_with:]]
-            else:
-                queries = [content[first_select:]]
+                if first_with != -1:
+                    queries.append(content[first_with:])
+                else:
+                    queries.append(content[first_select:])
     else:
         queries = [
         # "SELECT * FROM employees",
@@ -1869,9 +1916,9 @@ select  dt.d_year
  order by dt.d_year
          ,sum_agg desc
          ,brand_id
- LIMIT 100;
-            """
-        ]
+LIMIT 100;
+        """
+    ]
 
     for query in queries:
         print(query)
