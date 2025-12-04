@@ -9,7 +9,12 @@ import org.example.SqlBaseLexer;
 
 public class TestSQLParse {
     public static void main(String[] args) throws Exception {
-        String inputFile = ""; // your SQL file
+        if (args.length < 1) {
+            System.err.println("Usage: java TestSQLParse <input-sql-file>");
+            return;
+        }
+
+        String inputFile = args[0];
         InputStream is = new FileInputStream(inputFile);
 
         // Create CharStream from file

@@ -20,7 +20,7 @@ Assume that your cwd looks something like this:
 ├── README.md (this file)
 ├── SqlBaseLexer.g4
 ├── SqlBaseParser.g4
-├── src
+└──  src
     ├── TestSQLParse.java
     └── org
         └── example
@@ -37,8 +37,6 @@ Assume that your cwd looks something like this:
 ## TODO
 ```
 $mkdir -p build
-$javac -d build -cp /usr/local/lib/antlr-4.13.2-complete.jar \
-    src/org/example/*.java src/TestSQLParse.java
-$java -cp build:/usr/local/lib/antlr-4.13.2-complete.jar \
-    TestSQLParse
+$javac -d build -cp /usr/local/lib/antlr-4.13.2-complete.jar src/org/example/*.java src/TestSQLParse.java
+$java -cp build:/usr/local/lib/antlr-4.13.2-complete.jar TestSQLParse <your input file>
 ```
