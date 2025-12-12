@@ -10,3 +10,4 @@ openai
 sqlglot
 pyspark
 pyspark[sql]
+matplotlib
