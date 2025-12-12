@@ -8,3 +8,5 @@ nbconvert
 libcst>=1.2.0
 openai
 sqlglot
+pyspark
+pyspark[sql]
