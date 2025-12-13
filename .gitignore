@@ -1,7 +1,12 @@
 .env
 .venv
+.vscode
+*.class
 *.jsonl
+*.g4
 *.python-version
 
 # ignore results files
 results/
+# ignore java build dir
+build/
