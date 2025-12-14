@@ -1506,8 +1506,13 @@ def translate_sql_to_pyspark(query: str) -> str:
                 
                 seen_aggs.add(agg_str)
                 
-                func_name = list(agg.keys())[0]
-                func_arg = agg[func_name]
+                # Special-case combined COUNT + DISTINCT
+                if 'count' in agg and 'distinct' in agg:
+                    func_name = 'countDistinct'
+                    func_arg = agg['count']
+                else:
+                    func_name = list(agg.keys())[0]
+                    func_arg = agg[func_name]
                 
                 # Determine Alias
                 alias_name = None
@@ -1530,7 +1535,10 @@ def translate_sql_to_pyspark(query: str) -> str:
                 else:
                     arg_translated = f'col("{func_arg}")' if type(func_arg) is str and func_arg != "*" else f'lit(1)' if func_arg == "*" else str(func_arg)
                 
-                v_agg += f"{func_name}({arg_translated}).alias('{alias_name}'),"
+                v_agg += (
+                    f"countDistinct({arg_translated}).alias('{alias_name}')," if func_name.lower() == 'countdistinct' 
+                    else f"{func_name}({arg_translated}).alias('{alias_name}'),"
+                )
                 agg_aliases[agg_str] = alias_name
                 (f"DEBUG: Stored alias for {agg_str} -> {alias_name}")
             # print(f"DEBUG: agg_aliases: {agg_aliases}")

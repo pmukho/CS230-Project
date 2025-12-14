@@ -1,0 +1,156 @@
+TPC-DS SQL-TO-PYSPARK TRANSLATOR TEST RESULTS
+================================================================================
+
+Total Queries: 35
+Successful: 27
+Failed: 8
+
+RESULTS BY LEVEL:
+ADV: 8/10
+BASIC: 10/10
+INT: 7/10
+PROD: 2/5
+
+
+DETAILED RESULTS:
+
+BASIC.1: Simple store sales query
+Status: PASS
+
+BASIC.2: Customer lookup
+Status: PASS
+
+BASIC.3: Item price analysis
+Status: PASS
+
+BASIC.4: Store information
+Status: PASS
+
+BASIC.5: Date range query
+Status: PASS
+
+BASIC.6: Simple aggregation
+Status: PASS
+
+BASIC.7: COUNT DISTINCT
+Status: PASS
+
+BASIC.8: WHERE with AND condition
+Status: PASS
+
+BASIC.9: WHERE with OR condition
+Status: PASS
+
+BASIC.10: BETWEEN clause
+Status: PASS
+
+INT.1: Simple INNER JOIN (customer-sales)
+Status: PASS
+
+INT.2: JOIN with aggregation
+Status: PASS
+
+INT.3: Three-table JOIN
+Status: PASS
+
+INT.4: LEFT JOIN (store-sales)
+Status: PASS
+
+INT.5: GROUP BY with HAVING
+Status: PASS
+
+INT.6: JOIN with aggregation and filtering
+Status: PASS
+
+INT.7: Window function - ROW_NUMBER
+Status: EXECUTION_ERROR
+Error: NameError: name 'row_number' is not defined
+
+INT.8: Window function - RANK
+Status: EXECUTION_ERROR
+Error: NameError: name 'rank' is not defined
+
+INT.9: Multiple GROUP BY columns
+Status: PASS
+
+INT.10: String functions in SELECT
+Status: EXECUTION_ERROR
+Error: NameError: name 'upper' is not defined
+
+ADV.1: Subquery in WHERE clause
+Status: PASS
+
+ADV.2: Scalar subquery
+Status: PASS
+
+ADV.3: Subquery in FROM clause
+Status: PASS
+
+ADV.4: JOIN with subquery
+Status: PASS
+
+ADV.5: CASE WHEN for categorization
+Status: PASS
+
+ADV.6: Window function with ROWS BETWEEN
+Status: EXECUTION_ERROR
+Error: AnalysisException: [NESTED_AGGREGATE_FUNCTION] It is not allowed to use an aggregate function in the argument of another aggregate function. Please use the inner aggregate function in a sub-query. SQLSTATE: 42607;
+Aggregate [d_date#20], [d_date#20, sum(ss_sales_price#110) AS daily_sales#505, sum(sum(ss_sales_price#110)) AS rolling_7day_sales#506]
++- Filter (d_year#24 = 2021)
+   +- Join Inner, (ss_sold_date_sk#97 = d_date_sk#18)
+      :- SubqueryAlias ss
+      :  +- SubqueryAlias store_sales
+      :     +- View (`store_sales`, [ss_sold_date_sk#97, ss_sold_time_sk#98, ss_item_sk#99, ss_customer_sk#100, ss_cdemo_sk#101, ss_hdemo_sk#102, ss_addr_sk#103, ss_store_sk#104, ss_promo_sk#105, ss_ticket_number#106, ss_quantity#107, ss_wholesale_cost#108, ss_list_price#109, ss_sales_price#110, ss_ext_discount_amt#111, ss_ext_sales_price#112, ss_ext_wholesale_cost#113, ss_ext_list_price#114, ss_ext_tax#115, ss_coupon_amt#116, ss_net_paid#117, ss_net_paid_inc_tax#118, ss_net_profit#119])
+      :        +- Relation [ss_sold_date_sk#97,ss_sold_time_sk#98,ss_item_sk#99,ss_customer_sk#100,ss_cdemo_sk#101,ss_hdemo_sk#102,ss_addr_sk#103,ss_store_sk#104,ss_promo_sk#105,ss_ticket_number#106,ss_quantity#107,ss_wholesale_cost#108,ss_list_price#109,ss_sales_price#110,ss_ext_discount_amt#111,ss_ext_sales_price#112,ss_ext_wholesale_cost#113,ss_ext_list_price#114,ss_ext_tax#115,ss_coupon_amt#116,ss_net_paid#117,ss_net_paid_inc_tax#118,ss_net_profit#119] csv
+      +- SubqueryAlias d
+         +- SubqueryAlias date_dim
+            +- View (`date_dim`, [d_date_sk#18, d_date_id#19, d_date#20, d_month_seq#21, d_week_seq#22, d_quarter_seq#23, d_year#24, d_dow#25, d_moy#26, d_dom#27, d_qoy#28, d_fy_year#29, d_fy_quarter_seq#30, d_fy_week_seq#31, d_day_name#32, d_quarter_name#33, d_holiday#34, d_weekend#35, d_following_holiday#36, d_first_dom#37, d_last_dom#38, d_same_day_ly#39, d_same_day_lq#40, d_current_day#41, d_current_week#42, ... 3 more fields])
+               +- Relation [d_date_sk#18,d_date_id#19,d_date#20,d_month_seq#21,d_week_seq#22,d_quarter_seq#23,d_year#24,d_dow#25,d_moy#26,d_dom#27,d_qoy#28,d_fy_year#29,d_fy_quarter_seq#30,d_fy_week_seq#31,d_day_name#32,d_quarter_name#33,d_holiday#34,d_weekend#35,d_following_holiday#36,d_first_dom#37,d_last_dom#38,d_same_day_ly#39,d_same_day_lq#40,d_current_day#41,d_current_week#42,... 3 more fields] csv
+
+
+ADV.7: Multiple aggregates with GROUP BY
+Status: PASS
+
+ADV.8: DISTINCT with aggregation
+Status: PASS
+
+ADV.9: Complex three-table JOIN with aggregation
+Status: PASS
+
+ADV.10: LEFT JOIN with GROUP BY and HAVING
+Status: EXECUTION_ERROR
+Error: NameError: name 'coalesce' is not defined
+
+PROD.1: Sales analysis by customer segment
+Status: EXECUTION_ERROR
+Error: NameError: name 'concat' is not defined
+
+PROD.2: Store performance summary
+Status: PASS
+
+PROD.3: Category performance with date range
+Status: PASS
+
+PROD.4: Top customers for each store
+Status: EXECUTION_ERROR
+Error: NameError: name 'rank' is not defined
+
+PROD.5: Inventory analysis
+Status: EXECUTION_ERROR
+Error: AnalysisException: [UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name `inv`.`inv_qty_on_hand` cannot be resolved. Did you mean one of the following? [`inv`.`inv_quantity_on_hand`, `inv`.`inv_item_sk`, `inv`.`inv_date_sk`, `i`.`i_brand`, `i`.`i_item_id`]. SQLSTATE: 42703;
+'Aggregate [i_item_id#47, i_item_desc#50, i_category#58, 'inv.inv_qty_on_hand], [i_item_id#47, i_item_desc#50, i_category#58, 'inv.inv_qty_on_hand, count(distinct ss_item_sk#99) AS sales_count#1032L, sum(ss_quantity#107) AS units_sold#1033L]
++- Join LeftOuter, (i_item_sk#46 = ss_item_sk#99)
+   :- Join LeftOuter, (i_item_sk#46 = inv_item_sk#121)
+   :  :- SubqueryAlias i
+   :  :  +- SubqueryAlias item
+   :  :     +- View (`item`, [i_item_sk#46, i_item_id#47, i_rec_start_date#48, i_rec_end_date#49, i_item_desc#50, i_current_price#51, i_wholesale_cost#52, i_brand_id#53, i_brand#54, i_class_id#55, i_class#56, i_category_id#57, i_category#58, i_manufact_id#59, i_manufact#60, i_size#61, i_formulation#62, i_color#63, i_units#64, i_container#65, i_manager_id#66, i_product_name#67])
+   :  :        +- Relation [i_item_sk#46,i_item_id#47,i_rec_start_date#48,i_rec_end_date#49,i_item_desc#50,i_current_price#51,i_wholesale_cost#52,i_brand_id#53,i_brand#54,i_class_id#55,i_class#56,i_category_id#57,i_category#58,i_manufact_id#59,i_manufact#60,i_size#61,i_formulation#62,i_color#63,i_units#64,i_container#65,i_manager_id#66,i_product_name#67] csv
+   :  +- SubqueryAlias inv
+   :     +- SubqueryAlias inventory
+   :        +- View (`inventory`, [inv_date_sk#120, inv_item_sk#121, inv_warehouse_sk#122, inv_quantity_on_hand#123])
+   :           +- Relation [inv_date_sk#120,inv_item_sk#121,inv_warehouse_sk#122,inv_quantity_on_hand#123] csv
+   +- SubqueryAlias ss
+      +- SubqueryAlias store_sales
+         +- View (`store_sales`, [ss_sold_date_sk#97, ss_sold_time_sk#98, ss_item_sk#99, ss_customer_sk#100, ss_cdemo_sk#101, ss_hdemo_sk#102, ss_addr_sk#103, ss_store_sk#104, ss_promo_sk#105, ss_ticket_number#106, ss_quantity#107, ss_wholesale_cost#108, ss_list_price#109, ss_sales_price#110, ss_ext_discount_amt#111, ss_ext_sales_price#112, ss_ext_wholesale_cost#113, ss_ext_list_price#114, ss_ext_tax#115, ss_coupon_amt#116, ss_net_paid#117, ss_net_paid_inc_tax#118, ss_net_profit#119])
+            +- Relation [ss_sold_date_sk#97,ss_sold_time_sk#98,ss_item_sk#99,ss_customer_sk#100,ss_cdemo_sk#101,ss_hdemo_sk#102,ss_addr_sk#103,ss_store_sk#104,ss_promo_sk#105,ss_ticket_number#106,ss_quantity#107,ss_wholesale_cost#108,ss_list_price#109,ss_sales_price#110,ss_ext_discount_amt#111,ss_ext_sales_price#112,ss_ext_wholesale_cost#113,ss_ext_list_price#114,ss_ext_tax#115,ss_coupon_amt#116,ss_net_paid#117,ss_net_paid_inc_tax#118,ss_net_profit#119] csv
+

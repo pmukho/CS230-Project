@@ -39,7 +39,7 @@ ORDER BY i_current_price DESC
 LIMIT 20;
 
 -- BASIC.4: Store information
-SELECT s_store_id, s_store_name, s_state, s_employees
+SELECT s_store_id, s_store_name, s_state, s_number_employees
 FROM store
 WHERE s_state IN ('CA', 'NY', 'TX');
 
