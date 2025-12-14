@@ -1,5 +1,7 @@
 # UDF Insertion
 
+SEE ../sql_annotated/schema_aware_sql.ipynb FOR SQL TRANSPLANTING OF UDFS. This insertion.py method is unused in our implmenetation.
+
 This folder contains utilities for analyzing Python code ASTs and inserting calls to User-Defined Functions (UDFs) based on type annotations.
 
 ## Files
