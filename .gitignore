@@ -5,3 +5,7 @@
 
 # ignore results files
 results/
+
+# ignore pycache
+__pycache__/
+*.pyc
